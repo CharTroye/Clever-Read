@@ -1,0 +1,13 @@
+{
+  "name": "clever-read",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "A local-first reading workspace for contextual explanations and document questions.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/core.mjs && node --check public/documents.mjs"
+  }
+}
