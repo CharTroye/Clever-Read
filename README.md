@@ -20,7 +20,7 @@ node server.mjs
 
 ## 核心使用流程
 
-1. 点击「导入文档」，选择 PDF、Word `.docx`、PowerPoint `.ppt / .pptx`、TXT 或 Markdown，也可粘贴文本。
+1. 点击「导入文档」，选择 PDF、Word `.docx`、PPT `.ppt / .pptx`、TXT 或 Markdown，也可粘贴文本。
 2. 在「模型与阅读设置」中启用真实模型问答，填写接口地址、模型 ID 和 API 密钥。接口须兼容 Chat Completions，例如 `https://你的服务/v1/chat/completions`。也可填写基础地址，如 `https://api.deepseek.com` 或 `https://你的服务/v1`，保存时会自动补齐 `/chat/completions`。本机免密模型可使用 `http://127.0.0.1:端口/v1/chat/completions`。
 3. 点击词语获取解释，或拖选句子/段落，点击「提问」，输入你的问题。也可切换「选句」，点击自动选中该句。按 Enter 发送问题，Shift + Enter 换行；先选择原文，发送按钮才会启用。
 4. 回答使用选区、邻近段落和本地关键词检索找到的相关片段。可以继续追问，或点击来源返回原文。
@@ -28,14 +28,16 @@ node server.mjs
 
 ## PPT / PPTX 阅读与框选
 
-本机需安装 **Windows 桌面版 Microsoft PowerPoint**。导入后按原始排版显示每张幻灯片，图片、图表和文字一起保留；支持旧版 `.ppt` 和 `.pptx`。文件只交给本机 PowerPoint 以只读模式解析，禁用宏，转换临时文件在完成后删除。
+本机需安装 **Windows 桌面版 WPS（含演示组件）或 Microsoft PowerPoint**。优先使用 WPS，无需同时安装微软 Office。导入后按原始排版显示每张幻灯片，图片、图表和文字一起保留；支持旧版 `.ppt` 和 `.pptx`。文件只交给本机演示软件以只读模式解析，转换临时文件在完成后删除。导入前检查宏/脚本内容；检测到时请先在 WPS 中另存为不含宏的 .pptx。
 
 - 「框选」模式：在幻灯片上拖动框出图片、文字或混合区域，右侧会显示截图和选中的文字，然后输入问题。也可用「选择整张幻灯片」。
 - 图片问答：在模型设置中选择支持图片输入的模型，并勾选「此模型支持图片输入」。接口需支持 Chat Completions 的 `image_url` 消息；App 只发送框选区域截图及相关文字。
 - 文字模型：切换「文字」模式点击文字区域，或框选一句话后点击「仅用选区文字提问」。图片中的文字不会冒充已提取的正文。
 - 支持上一张、下一张、页码跳转、缩放、追问和阅读记录。静态显示幻灯片，不播放动画、视频或音频。
 
-![PPT 框选提问示例，使用本地模拟接口验证](screenshots/clever-read-ppt.png)
+如果已安装 WPS 却提示没有演示软件，请确认安装了「WPS 演示」组件，先用 WPS 打开一次 PPT，再重试；仍无法识别时，可修复 WPS 安装以恢复本机自动化接口。
+
+![WPS 幻灯片框选提问，使用本地模拟接口验证](screenshots/clever-read-wps.png)
 
 ## API Key 模型库
 
@@ -43,7 +45,7 @@ node server.mjs
 
 Windows 使用当前用户的 **DPAPI** 加密保存到 `.runtime/model-vault.json`，浏览器只收到配置元数据和「密钥已保存」状态。关闭页面、退出服务或重启电脑后，使用同一个 Windows 账户启动即可继续使用。编辑已保存配置时，密钥留空表示保留原密钥；更换接口地址时需输入该接口对应的密钥。
 
-不要将 `.runtime` 上传到 GitHub；此目录已经忽略。非 Windows 平台采用本地 AES-GCM 与仅当前用户可读的密钥文件；PPT 原版读取仍需 Windows PowerPoint。取消勾选保存时，密钥仅用于本次页面会话。
+不要将 `.runtime` 上传到 GitHub；此目录已经忽略。非 Windows 平台采用本地 AES-GCM 与仅当前用户可读的密钥文件；PPT 原版读取仍需 Windows 桌面版 WPS 演示或 PowerPoint。取消勾选保存时，密钥仅用于本次页面会话。
 
 ![API 模型库，展示两组测试配置](screenshots/clever-read-model-library.png)
 
@@ -60,14 +62,14 @@ DeepSeek 配置：接口填写 `https://api.deepseek.com`，DeepSeek-V4.1-Flash 
 - **PDF**：最大 30 MB、150 页，需要文字层。支持流式阅读和保留排版的原版阅读，原版按可见页面渲染。
 - **Word `.docx`**：正文及表格中的文字以流式阅读展示，基本标题可保留。暂不还原 Word 页码和完整排版；图片、公式对象、脚注、修订标记不保证完整解析。
 - **旧版 `.doc`**：请先在 Word/WPS 中另存为 `.docx`。
-- **PowerPoint `.ppt / .pptx`**：最大 30 MB、150 张幻灯片；本机需 Windows 版 PowerPoint。保留静态排版并支持图片/文字框选提问。加密文件请先移除密码，导出图片总量超过 80 MB 时需拆分文件。
+- **PowerPoint `.ppt / .pptx`**：最大 30 MB、150 张幻灯片；本机需 Windows 桌面版 WPS 演示或 PowerPoint；优先使用 WPS。保留静态排版并支持图片/文字框选提问。加密文件请先移除密码，导出图片总量超过 80 MB 时需拆分文件。
 - **TXT / Markdown / 粘贴文本**：以纯文本展示，最多 30 万字符；文件推荐 UTF-8。
 - 扫描 PDF 和图片中的文字暂不支持 OCR。双栏 PDF 的流式顺序、连字和复杂公式可能不准确，请切换原版核对。
 - 不支持外部检索或跨文档问答；回答来源只在当前文档中查找。
 
 ## 本地数据与模型调用
 
-文档与记录保存在当前浏览器的 IndexedDB，不上传云端。PPT 导入通过本机服务交给 PowerPoint 渲染；其他格式仍在浏览器中解析。启用模型后，相关文档片段、选区、问题和最多六条追问历史经本机服务发送至所配置的模型服务。PPT 图片提问会额外发送框选截图，后续追问继续携带同一截图。API 密钥默认加密保存在本机模型库，不写入浏览器存储或日志，也不通过配置接口返回给浏览器。接口地址、模型 ID、阅读偏好会保存。
+文档与记录保存在当前浏览器的 IndexedDB，不上传云端。PPT 导入通过本机服务交给 WPS 演示或 PowerPoint 渲染；其他格式仍在浏览器中解析。启用模型后，相关文档片段、选区、问题和最多六条追问历史经本机服务发送至所配置的模型服务。PPT 图片提问会额外发送框选截图，后续追问继续携带同一截图。API 密钥默认加密保存在本机模型库，不写入浏览器存储或日志，也不通过配置接口返回给浏览器。接口地址、模型 ID、阅读偏好会保存。
 
 清除站点数据或改用其他浏览器不会保留记录，请及时导出。`localhost` 与 `127.0.0.1` 是不同的浏览器存储来源，建议始终使用同一地址。
 
@@ -80,6 +82,14 @@ npm.cmd run check
 npm.cmd test
 ```
 
+已安装 Windows 桌面版 WPS 时，可额外运行实际导入测试（强制仅使用 WPS）：
+
+```powershell
+$env:CLEVER_WPS_TEST='1'
+npm.cmd test
+Remove-Item Env:CLEVER_WPS_TEST
+```
+
 测试覆盖上下文检索、文字/矩形选区边界、密钥库加密和恢复、并发保存、损坏库保护、图片输入格式、模型结果引用过滤和本地接口联调。浏览器测试使用 `?test-session=qa` 独立测试存储与模型库，避免覆盖正常阅读数据；模拟接口只验证请求传递，不代表模型推理效果。
 
-代码结构：`public/app.js` 负责阅读与交互，`public/documents.mjs` 负责 PDF / Word 解析，`public/slides.mjs` 负责幻灯片交互，`presentations.mjs` 与 `scripts/render-presentation.ps1` 负责 PowerPoint 本机渲染，`vault.mjs` 负责密钥库，`public/core.mjs` 负责检索与结果处理，`server.mjs` 提供本机静态服务与模型接口代理。第三方说明见 `THIRD_PARTY_NOTICES.md`。
+代码结构：`public/app.js` 负责阅读与交互，`public/documents.mjs` 负责 PDF / Word 解析，`public/slides.mjs` 负责幻灯片交互，`presentations.mjs` 与 `scripts/render-presentation.ps1` 负责 WPS / PowerPoint 本机渲染，`vault.mjs` 负责密钥库，`public/core.mjs` 负责检索与结果处理，`server.mjs` 提供本机静态服务与模型接口代理。第三方说明见 `THIRD_PARTY_NOTICES.md`。

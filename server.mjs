@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateModelResult, normalizeEndpoint, normalizeModelName } from './public/core.mjs';
 import { ModelVault } from './vault.mjs';
-import { importPresentation, presentationCapability } from './presentations.mjs';
+import { importPresentation, presentationCapabilities } from './presentations.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT || 4173);
@@ -145,8 +145,11 @@ export function createServer({ runtimeDirectory = path.join(path.dirname(root), 
     try {
       const url = new URL(req.url, `http://${host}`);
       if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res, vaultFor(req));
-      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.2.0' });
-      if (url.pathname === '/api/capabilities' && req.method === 'GET') return json(res, 200, { powerPoint: await presentationCapability(), keyVault: true });
+      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.2.1' });
+      if (url.pathname === '/api/capabilities' && req.method === 'GET') {
+        const presentations = await presentationCapabilities();
+        return json(res, 200, { presentations, wps: presentations.renderers.some(renderer => renderer.id === 'wps'), powerPoint: presentations.renderers.some(renderer => renderer.id === 'powerpoint'), keyVault: true });
+      }
       if (url.pathname.startsWith('/api/vault')) {
         if (!sameApp(req)) return json(res, 403, { error: '请从本地阅读应用管理密钥库。' });
         const vault = vaultFor(req);

@@ -1,16 +1,27 @@
-param([string]$InputFile, [string]$OutputDirectory, [switch]$CleanupOnly)
+param([string]$InputFile, [string]$OutputDirectory, [switch]$CleanupOnly, [switch]$ProbeOnly, [ValidateSet('auto', 'wps', 'powerpoint')][string]$Renderer = 'auto')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$available = @()
+foreach ($engine in @(@{ id='wps'; label='WPS'; candidates=@('KWPP.Application', 'KWPP.Application.1', 'WPP.Application') }, @{ id='powerpoint'; label='Microsoft PowerPoint'; candidates=@('PowerPoint.Application') })) {
+    foreach ($candidateId in $engine.candidates) {
+        try { $registered = [Type]::GetTypeFromProgID($candidateId) } catch { $registered = $null }
+        if ($registered) { $available += @{ id=$engine.id; label=$engine.label; progId=$candidateId }; break }
+    }
+}
+if ($ProbeOnly) {
+    [Console]::Out.Write((@{ available=($available.Count -gt 0); preferred=($available | Select-Object -First 1).id; renderers=@($available) } | ConvertTo-Json -Depth 4 -Compress))
+    exit 0
+}
 if ($CleanupOnly) {
-    try {
-        $running = [Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application')
+    foreach ($engine in $available) { try {
+        $running = [Runtime.InteropServices.Marshal]::GetActiveObject($engine.progId)
         for ($i = $running.Presentations.Count; $i -ge 1; $i--) {
             $candidate = $running.Presentations.Item($i)
             if ($candidate.FullName -eq $InputFile) { $candidate.Close() }
             [void][Runtime.InteropServices.Marshal]::ReleaseComObject($candidate)
         }
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($running)
-    } catch { }
+    } catch { } }
     exit 0
 }
 $application = $null
@@ -25,9 +36,15 @@ function Add-Text($range, $blocks, $words) {
     if ($script:textTotal -gt 300000) { throw 'Presentation text exceeds 300,000 characters.' }
     $blockIndex = $blocks.Count
     $blocks.Add([ordered]@{ text = $text; x = [double]$range.BoundLeft; y = [double]$range.BoundTop; w = [double]$range.BoundWidth; h = [double]$range.BoundHeight })
-    $count = [int]$range.Words().Count
+    # WPS 12 implements Characters(), but Words() raises NotImplementedException.
+    $segments = $null
+    if ($selectedEngine.id -eq 'wps') {
+        $segments = [regex]::Matches([string]$range.Text, '[\p{IsCJKUnifiedIdeographs}]|[^\s\p{IsCJKUnifiedIdeographs}]+[ \t]*')
+        $count = $segments.Count
+    } else { $count = [int]$range.Words().Count }
     for ($wordIndex = 1; $wordIndex -le $count -and $script:wordTotal -lt 40000; $wordIndex++) {
-        $word = $range.Words($wordIndex, 1)
+        if ($segments) { $segment = $segments[$wordIndex - 1]; $word = $range.Characters($segment.Index + 1, $segment.Length) }
+        else { $word = $range.Words($wordIndex, 1) }
         $wordText = [string]$word.Text
         if ($wordText.Trim() -and $word.BoundWidth -gt 0 -and $word.BoundHeight -gt 0) {
             $words.Add([ordered]@{ text = $wordText; block = $blockIndex; x = [double]$word.BoundLeft; y = [double]$word.BoundTop; w = [double]$word.BoundWidth; h = [double]$word.BoundHeight })
@@ -56,13 +73,17 @@ function Read-Shape($shape, $blocks, $words) {
     }
 }
 try {
-    $application = New-Object -ComObject PowerPoint.Application
+    $choices = @($available | Where-Object { $Renderer -eq 'auto' -or $_.id -eq $Renderer })
+    $selectedEngine = $null
+    foreach ($engine in $choices) {
+        try { $application = New-Object -ComObject $engine.progId; $selectedEngine = $engine; break } catch { }
+    }
+    if (-not $application) { throw 'NO_PRESENTATION_ENGINE: Install or repair WPS desktop Presentation or Microsoft PowerPoint.' }
     $ownedApplication = $application.Presentations.Count -eq 0
-    $oldSecurity = $application.AutomationSecurity
-    $oldAlerts = $application.DisplayAlerts
-    $application.AutomationSecurity = 3
-    $application.DisplayAlerts = 1
-    # Read-only, no presentation window. Macros stay disabled for legacy PPT too.
+    # WPS exposes some Office properties as compatibility stubs. Do not depend on them.
+    try { $oldSecurity = $application.AutomationSecurity; $hasSecurity=$true; $application.AutomationSecurity = 3 } catch { $hasSecurity=$false }
+    try { $oldAlerts = $application.DisplayAlerts; $hasAlerts=$true; $application.DisplayAlerts = 1 } catch { $hasAlerts=$false }
+    # Read-only, no presentation window. Input is checked before this helper opens it.
     $presentation = $application.Presentations.Open($InputFile, -1, 0, 0)
     if ($presentation.Slides.Count -gt 150) { throw 'A maximum of 150 slides is supported.' }
     $width = [double]$presentation.PageSetup.SlideWidth
@@ -84,15 +105,17 @@ try {
         $slides.Add([ordered]@{ page = $page; image = $filename; texts = $blocks.ToArray(); words = $words.ToArray() })
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($slide)
     }
-    $manifest = [ordered]@{ width = $width; height = $height; slides = $slides.ToArray(); renderer = 'Microsoft PowerPoint' }
+    $manifest = [ordered]@{ width = $width; height = $height; slides = $slides.ToArray(); renderer = $selectedEngine.label; rendererId = $selectedEngine.id }
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'manifest.json'), ($manifest | ConvertTo-Json -Depth 12 -Compress), [Text.UTF8Encoding]::new($false))
 } catch {
-    [Console]::Error.Write('PowerPoint could not read this presentation. Check that PowerPoint is installed and the file is not encrypted or damaged. ' + $_.Exception.Message)
+    if ($_.Exception.Message -like 'NO_PRESENTATION_ENGINE:*') { [Console]::Error.Write($_.Exception.Message) }
+    else { [Console]::Error.Write('PRESENTATION_RENDER_FAILED: ' + $selectedEngine.label + ': ' + $_.Exception.Message) }
     exit 1
 } finally {
     if ($presentation) { $presentation.Close(); [void][Runtime.InteropServices.Marshal]::ReleaseComObject($presentation) }
     if ($application) {
-        try { $application.AutomationSecurity = $oldSecurity; $application.DisplayAlerts = $oldAlerts } catch { }
+        if ($hasSecurity) { try { $application.AutomationSecurity = $oldSecurity } catch { } }
+        if ($hasAlerts) { try { $application.DisplayAlerts = $oldAlerts } catch { } }
         if ($ownedApplication -and $application.Presentations.Count -eq 0) { $application.Quit() }
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($application)
     }

@@ -26,7 +26,7 @@
       <div class="app-sidebar-bottom">
         <div class="local-note"><span data-icon="shield"></span><div>文档保存在本机<span>接入模型后，仅发送相关片段</span></div></div>
         <button class="nav-item" data-action="settings" aria-label="模型与阅读设置" title="模型与阅读设置"><span data-icon="settings"></span>模型与阅读设置</button>
-        <div class="version">Clever Read <span>v0.2.0</span></div>
+        <div class="version">Clever Read <span>v0.2.1</span></div>
       </div>
     </aside>
     <div class="workspace">
@@ -71,9 +71,9 @@
   <dialog id="import-dialog" class="modal" aria-labelledby="import-title">
     <div class="modal-header"><div><div class="eyebrow">添加到文档库</div><h2 id="import-title">开始阅读一份新文档</h2></div><button class="icon-button" data-close="import-dialog" aria-label="关闭导入窗口"><span data-icon="close"></span></button></div>
     <div class="modal-tabs" role="group" aria-label="文档导入方式" data-segmented><button class="active" data-import-tab="file" aria-pressed="true">上传文件</button><button data-import-tab="text" aria-pressed="false">粘贴文本</button></div>
-    <div id="file-import"><label class="drop-zone" id="drop-zone"><input type="file" id="file-input" accept=".pdf,.docx,.ppt,.pptx,.txt,.md,text/plain,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><span class="upload-mark" data-icon="upload"></span><strong>选择文件，或拖到这里</strong><span>PDF / Word / PPT / TXT / Markdown · 最大 30 MB</span></label><p class="helper">PDF 最多 150 页，PPT 最多 150 张幻灯片。PPT / PPTX 原版阅读需本机安装 Windows 版 PowerPoint；旧版 Word .doc 请先另存为 .docx。</p></div>
+    <div id="file-import"><label class="drop-zone" id="drop-zone"><input type="file" id="file-input" accept=".pdf,.docx,.ppt,.pptx,.txt,.md,text/plain,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><span class="upload-mark" data-icon="upload"></span><strong>选择文件，或拖到这里</strong><span>PDF / Word / PPT / TXT / Markdown · 最大 30 MB</span></label><p class="helper">PDF 最多 150 页，PPT 最多 150 张幻灯片。PPT / PPTX 原版阅读支持 Windows 桌面版 WPS 演示，也兼容 PowerPoint；旧版 Word .doc 请先另存为 .docx。</p></div>
     <form id="text-import" class="hidden"><label>文档标题<input id="text-title" placeholder="例如：研究方法阅读笔记" maxlength="160" required></label><label>正文<textarea id="text-content" rows="9" placeholder="粘贴论文段落、文章或其他长文本……" maxlength="300000" required></textarea></label><button class="button primary" type="submit">加入文档库</button></form>
-    <div id="import-progress" class="import-progress hidden" role="status"></div><div class="modal-footnote"><span data-icon="shield"></span>导入与解析在本机完成。PPT 交由本机 PowerPoint 读取，不发送至云端。</div>
+    <div id="import-progress" class="import-progress hidden" role="status"></div><div class="modal-footnote"><span data-icon="shield"></span>导入与解析在本机完成。PPT 交由本机 WPS 演示或 PowerPoint 读取，不发送至云端。</div>
   </dialog>
   <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title">
     <div class="modal-header"><div><div class="eyebrow">调整你的阅读体验</div><h2 id="settings-title">模型与阅读设置</h2></div><button class="icon-button" data-close="settings-dialog" aria-label="关闭设置"><span data-icon="close"></span></button></div>

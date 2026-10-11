@@ -365,7 +365,7 @@ async function openDocument(id, restorePosition = true) {
   $('#slide-hint').textContent = '拖动框选图片或文字，再向右侧助手提问';
   $('#font-value').textContent = isPresentation() ? '100%' : fontSize;
   $('#breadcrumb-title').textContent = active.title;
-  $('#doc-meta').textContent = isPresentation() ? `${active.pages} 张幻灯片 · PowerPoint 原版` : active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
+  $('#doc-meta').textContent = isPresentation() ? `${active.pages} 张幻灯片 · ${active.renderer || '演示文稿'} 原版` : active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
   try { localStorage.setItem(storagePrefix + '-active', active.id); } catch { /* Nonessential preference. */ }
   requestAnimationFrame(() => { $('#reading-scroll').scrollTop = restorePosition ? active.scrollTop || 0 : 0; updateProgress(); });
   if (previousDocument && previousDocument !== active.id) revealSurface($('#document-content'));
@@ -723,7 +723,7 @@ async function handleFile(file) {
     if (file.size > 30 * 1024 * 1024) throw new Error('文件超过 30 MB，请拆分或压缩后导入。');
     const extension = file.name.split('.').at(-1).toLowerCase();
     if (extension === 'doc') throw new Error('旧版 .doc 暂不支持，请在 Word 或 WPS 中另存为 .docx。');
-    if (!['pdf', 'docx', 'ppt', 'pptx', 'txt', 'md'].includes(extension)) throw new Error('请导入 PDF、Word (.docx)、PowerPoint (.ppt / .pptx)、TXT 或 Markdown。');
+    if (!['pdf', 'docx', 'ppt', 'pptx', 'txt', 'md'].includes(extension)) throw new Error('请导入 PDF、Word (.docx)、PPT (.ppt / .pptx)、TXT 或 Markdown。');
     const checksum = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
     const duplicate = documents.find(d => d.checksum === checksum);
     if (duplicate) { $('#import-dialog').close(); await openDocument(duplicate.id); toast('这份文档已在文档库中。'); return; }
@@ -732,10 +732,10 @@ async function handleFile(file) {
     if (extension === 'pdf') parsed = await importPdf(file, importProgress);
     else if (extension === 'docx') parsed = await importDocx(file, importProgress);
     else if (['ppt', 'pptx'].includes(extension)) {
-      importProgress('正在通过本机 PowerPoint 读取幻灯片，请稍候…');
+      importProgress('正在通过本机演示软件读取幻灯片，请稍候…');
       const response = await fetch('/api/presentations/import?extension=' + extension, { method: 'POST', headers: { ...apiHeaders(), 'Content-Type': 'application/octet-stream' }, body: file });
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error || '无法读取 PowerPoint 文件。');
+      if (!response.ok) throw new Error(value.error || '无法读取演示文件。');
       parsed = { ...value, blob: file };
     }
     else {
@@ -745,7 +745,7 @@ async function handleFile(file) {
       parsed = { blocks: splitParagraphs(text), pages: null };
       if (!parsed.blocks.length) throw new Error('文件没有可阅读的内容。');
     }
-    await saveDocument({ id: crypto.randomUUID(), title: file.name.replace(/\.[^.]+$/, ''), type: extension, author: extension === 'docx' ? 'Word 正文 · 本地解析' : ['ppt', 'pptx'].includes(extension) ? 'PowerPoint · 本机读取' : '本地文档', createdAt: Date.now(), checksum, ...parsed });
+    await saveDocument({ id: crypto.randomUUID(), title: file.name.replace(/\.[^.]+$/, ''), type: extension, author: extension === 'docx' ? 'Word 正文 · 本地解析' : ['ppt', 'pptx'].includes(extension) ? `${parsed.renderer || '演示软件'} · 本机读取` : '本地文档', createdAt: Date.now(), checksum, ...parsed });
   } catch (error) { importProgress(error.message.includes('Invalid') ? '文档损坏或格式不支持，请检查文件。' : error.message); }
   finally { importing = false; $('#file-input').disabled = false; $('#file-input').value = ''; }
 }
