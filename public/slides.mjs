@@ -35,7 +35,8 @@ export class SlideReader {
   resize() {
     if (!this.doc) return;
     const scroll = this.root.parentElement, style = getComputedStyle(scroll);
-    const width = Math.floor(Math.min(850, Math.max(160, scroll.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 1)) * this.zoom);
+    const preferred = parseFloat(getComputedStyle(scroll.closest('.reader-layout')).getPropertyValue('--reading-page-width')) || 850;
+    const width = Math.floor(Math.min(preferred, Math.max(160, scroll.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 1)) * this.zoom);
     this.root.style.setProperty('--slide-width', width + 'px');
   }
   setMode(mode) {

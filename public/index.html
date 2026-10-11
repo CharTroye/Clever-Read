@@ -3,37 +3,48 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f5f7">
+  <meta name="theme-color" content="#f1f1ef">
   <meta name="description" content="Clever Read：在阅读的位置理解术语，拆解句子，追问原文。">
-  <title>Clever Read · 阅读工作台</title>
+  <title>Clever Read · 文档库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/pdfjs/web/pdf_viewer.css">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/library.css">
 </head>
 <body>
-  <div class="app-shell">
+  <div class="app-shell" data-view="library">
     <aside class="app-sidebar" aria-label="主导航">
-      <a class="brand" href="/" aria-label="Clever Read 首页"><span class="brand-mark" data-icon="book"></span><span>Clever<span class="brand-light">Read</span></span></a>
+      <button class="brand" data-view="library" aria-label="Clever Read 文档库"><span class="brand-mark" data-icon="open-book"></span><span>Clever<span class="brand-light">Read</span></span></button>
       <div class="workspace-label">我的阅读空间</div>
-      <nav class="main-nav" data-segmented="vertical">
-        <button class="nav-item active" data-view="reader" aria-label="阅读工作台" aria-current="page" title="阅读工作台"><span data-icon="open-book"></span>阅读工作台</button>
+      <nav class="main-nav">
+        <button class="nav-item active" data-library-filter="all" aria-current="page"><span data-icon="library"></span>所有文档<span class="nav-count" id="documents-count">0</span></button>
+        <button class="nav-item" data-library-filter="recent"><span data-icon="clock"></span>最近阅读</button>
         <button class="nav-item" data-view="notes" aria-label="阅读记录" title="阅读记录"><span data-icon="note"></span>阅读记录<span class="nav-count" id="notes-count">0</span></button>
         <button class="nav-item" data-view="terms" aria-label="我的术语本" title="我的术语本"><span data-icon="bookmark"></span>我的术语本<span class="nav-count" id="terms-count">0</span></button>
       </nav>
-      <div class="library-heading"><span>文档库</span><button class="icon-button" data-action="import" aria-label="添加文档"><span data-icon="plus"></span></button></div>
-      <div id="document-list" class="document-list"></div>
+      <div class="library-heading"><span>分类</span><button class="icon-button" data-action="new-category" aria-label="新建分类"><span data-icon="plus"></span></button></div>
+      <nav id="category-list" class="category-list" aria-label="文档分类"></nav>
       <div class="app-sidebar-bottom">
-        <div class="local-note"><span data-icon="shield"></span><div>文档保存在本机<span>接入模型后，仅发送相关片段</span></div></div>
+        <div class="local-note"><span data-icon="shield"></span><div>文档保存在本机</div></div>
         <button class="nav-item" data-action="settings" aria-label="模型与阅读设置" title="模型与阅读设置"><span data-icon="settings"></span>模型与阅读设置</button>
       </div>
     </aside>
     <div class="workspace">
       <header class="topbar">
-        <div class="breadcrumb"><button class="icon-button" id="sidebar-toggle" aria-label="收起侧栏" title="收起侧栏" aria-pressed="false"><span data-icon="sidebar"></span></button><span id="view-label">阅读工作台</span><span class="breadcrumb-divider">/</span><span id="breadcrumb-title">Understanding Attention</span><select id="document-switch" class="document-switch" aria-label="切换文档"></select></div>
-        <div class="topbar-actions"><button class="quiet-button" id="focus-toggle" aria-pressed="false" title="专注阅读"><span data-icon="focus"></span><span>专注阅读</span></button><button class="mode-pill" data-action="settings" id="model-status"><span data-icon="message"></span>本地辅助</button><button class="button primary small" data-action="import"><span data-icon="plus"></span>导入文档</button></div>
+        <button class="quiet-button reader-back hidden" data-view="library"><span data-icon="back"></span>文档库</button>
+        <div class="breadcrumb"><span id="view-label">本机阅读空间</span><span id="breadcrumb-title" class="sr-only"></span><select id="document-switch" class="document-switch" aria-label="切换文档"></select></div>
+        <div class="topbar-actions"><button class="quiet-button hidden" id="focus-toggle" aria-pressed="true" title="收起原文解读"><span data-icon="sidebar"></span><span>解读</span></button><button class="mode-pill" data-action="settings" id="model-status"><span data-icon="message"></span>本地辅助</button></div>
       </header>
-      <main id="reader-view" class="reader-layout">
+      <main id="library-view" class="library-view">
+        <header class="library-top"><div><h1 id="library-title">文档库</h1><span id="library-count">正在打开本机文档库…</span></div><button class="button primary small" data-action="import"><span data-icon="plus"></span>导入文档</button></header>
+        <section id="resume-reading" class="resume-reading hidden" aria-label="继续阅读"><h2>继续阅读</h2><button id="resume-document" class="resume-document"><span class="resume-icon" data-icon="open-book"></span><span class="resume-copy"><strong id="resume-title"></strong><span id="resume-position"></span></span><span class="resume-action">继续<span data-icon="arrow-right"></span></span></button></section>
+        <div class="library-list-tools"><h2 id="library-list-title">所有文档</h2><label class="library-search"><span data-icon="search"></span><input id="library-search" type="search" placeholder="搜索文档" aria-label="搜索文档" maxlength="160"></label></div>
+        <div class="library-table-head" aria-hidden="true"><span>名称</span><span>分类</span><span>阅读位置</span><span></span></div><div id="document-list" class="library-documents"></div>
+        <p id="library-empty" class="library-empty" role="status">正在恢复文档与阅读位置…</p>
+        <footer class="library-footer"><span>PDF / Word / PPT / 文本</span><span>本机保存</span></footer>
+      </main>
+      <main id="reader-view" class="reader-layout hidden">
         <section class="reading-column" aria-label="文档阅读区">
           <div class="reader-toolbar">
             <div class="reading-mode" role="group" aria-label="点击选择方式" data-segmented><button class="active" data-select-mode="word" aria-pressed="true" title="点击选择词语">选词</button><button data-select-mode="sentence" aria-pressed="false" title="点击选择整句">选句</button></div>
@@ -50,9 +61,9 @@
           </div>
           <footer class="reader-footer"><span id="doc-meta">原创教学示例</span><div class="reading-position"><span id="reading-progress">阅读进度 0%</span><span class="reading-meter" aria-hidden="true"><span id="progress-fill"></span></span></div></footer>
         </section>
-        <div id="assistant-resizer" class="assistant-resizer" role="separator" aria-label="调整阅读助手宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="520" aria-valuenow="348" tabindex="0"></div>
+        <div id="assistant-resizer" class="assistant-resizer" role="separator" aria-label="调整解读栏宽度" aria-orientation="vertical" aria-valuemin="260" aria-valuemax="420" aria-valuenow="278" tabindex="0"></div>
         <aside class="assistant-panel" aria-label="阅读助手">
-          <div class="assistant-header"><span class="assistant-logo" data-icon="message"></span><div>阅读助手<span>围绕原文，解释与追问</span></div><button class="icon-button" data-action="clear-answer" aria-label="清空当前解读" title="清空当前解读"><span data-icon="refresh"></span></button></div>
+          <div class="assistant-header"><div>原文解读</div><button class="icon-button" data-action="clear-answer" aria-label="清空当前解读" title="清空当前解读"><span data-icon="refresh"></span></button></div>
           <div class="assistant-tabs" role="group" aria-label="助手内容" data-segmented><button class="active" data-panel="explain" aria-pressed="true">当前解读</button><button data-panel="history" aria-pressed="false">本篇记录<span id="history-count">0</span></button></div>
           <div id="assistant-body" class="assistant-body" aria-live="polite"></div>
           <div class="question-area">
@@ -82,6 +93,7 @@
       <div class="settings-body">
         <section class="model-library" aria-labelledby="model-library-title"><div class="model-library-heading"><h3 id="model-library-title">API 模型库</h3><button class="button secondary small" type="button" data-action="new-profile">新增模型</button></div><p class="helper">按模型保存接口与密钥，重启后继续使用。</p><div id="model-profiles"></div><p id="vault-error" class="form-error hidden" role="alert"></p></section>
         <label class="depth-setting">解释深度<select id="depth"><option value="入门">入门 · 直觉与例子</option><option value="专业">专业 · 定义与适用条件</option><option value="深入">深入 · 推导与逻辑关系</option></select></label>
+        <label class="checkbox-label"><input id="resume-on-launch" type="checkbox">启动后继续上次阅读</label>
         <div class="model-setting"><label class="checkbox-label"><input id="use-model" type="checkbox">启用真实模型问答</label><p class="helper">向你配置的模型发送选区、相关原文与追问历史，支持 Chat Completions 兼容接口。</p></div>
         <label>模型显示名称<input id="profile-name" placeholder="例如：论文阅读模型" maxlength="120" autocomplete="off"></label>
         <label>接口地址<input id="endpoint" type="url" placeholder="https://api.deepseek.com" autocomplete="off" aria-describedby="endpoint-help"></label>
@@ -96,6 +108,7 @@
       <div class="modal-actions"><span class="settings-save-note">修改后点击保存生效</span><button class="button secondary" type="button" data-close="settings-dialog">取消</button><button class="button primary" type="submit">保存设置</button></div>
     </form>
   </dialog>
+  <dialog id="category-dialog" class="modal category-modal" aria-labelledby="category-title"><div class="modal-header"><h2 id="category-title">新建分类</h2><button class="icon-button" data-close="category-dialog" aria-label="关闭分类窗口"><span data-icon="close"></span></button></div><form id="category-form"><label for="category-name">分类名称</label><input id="category-name" required maxlength="40" placeholder="例如：机器学习、电机学" autocomplete="off"><p id="category-error" class="form-error hidden" role="alert"></p><div class="modal-actions"><button class="button secondary" type="button" data-close="category-dialog">取消</button><button class="button primary" type="submit">创建分类</button></div></form></dialog>
   <script src="/vendor/jszip/jszip.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

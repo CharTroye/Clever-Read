@@ -1,6 +1,6 @@
 {
   "name": "clever-read",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "A local-first reading workspace for contextual explanations and document questions.",
@@ -8,6 +8,6 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check vault.mjs && node --check presentations.mjs && node --check presentation-input.mjs && node --check public/app.js && node --check public/core.mjs && node --check public/documents.mjs && node --check public/regions.mjs && node --check public/slides.mjs && node --check public/layout.mjs && node --check public/presentation-stream.mjs"
+    "check": "node --check server.mjs && node --check vault.mjs && node --check presentations.mjs && node --check presentation-input.mjs && node --check public/app.js && node --check public/core.mjs && node --check public/documents.mjs && node --check public/regions.mjs && node --check public/slides.mjs && node --check public/layout.mjs && node --check public/library.mjs && node --check public/presentation-stream.mjs"
   }
 }

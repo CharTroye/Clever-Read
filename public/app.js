@@ -4,6 +4,7 @@ import { loadPdf, pdfLibrary, importPdf, importDocx } from './documents.mjs';
 import { SlideReader } from './slides.mjs';
 import { initWorkspaceLayout } from './layout.mjs';
 import { readPresentationStream } from './presentation-stream.mjs';
+import { categoryName, categoryNames, filterDocuments, documentMeta, readingPosition } from './library.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => Array.from(document.querySelectorAll(selector));
@@ -34,7 +35,10 @@ const paths = {
   check: '<path d="m5 12 4 4L19 6"/>',
   sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
   focus: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
-  chevron: '<path d="m6 9 6 6 6-6"/>'
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  back: '<path d="M20 12H4m6-6-6 6 6 6"/>',
+  library: '<path d="M4 3v18M8 3v18M12 3v18m4-17 5 16"/>',
+  folder: '<path d="M3 6h7l2 2h9v12H3z"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
@@ -116,7 +120,7 @@ let active;
 let selection = null;
 let selectionRange = null;
 let currentRecord = null;
-let view = 'reader';
+let view = 'library';
 let panel = 'explain';
 let selectMode = 'word';
 let pdfMode = 'reflow';
@@ -140,10 +144,15 @@ let importController = null;
 let toastTimer;
 let previewExpanded = false;
 let workspaceLayout;
+let readerDocumentId = null;
+let openGeneration = 0;
+let restoringPosition = false;
+let libraryState = { filter: 'all', query: '', scrollTop: 0, categories: [] };
+const readerSessions = new Map();
 const answerCache = new Map();
 const qaSession = new URLSearchParams(location.search).get('test-session')?.replace(/[^a-z0-9-]/gi, '').slice(0, 40);
 const storagePrefix = qaSession ? `clever-qa-${qaSession}` : 'clever';
-const defaults = { enabled: false, endpoint: '', model: '', profileId: '', vision: false, depth: '入门', fontSize: 18, clickAssist: true };
+const defaults = { enabled: false, endpoint: '', model: '', profileId: '', vision: false, depth: '入门', fontSize: 18, clickAssist: true, resumeOnLaunch: false };
 let hadPreferences = false;
 let settings = { ...defaults };
 try {
@@ -153,6 +162,10 @@ try {
   if (settings.endpoint) settings.endpoint = normalizeEndpoint(settings.endpoint);
   settings.model = normalizeModelName(settings.model, settings.endpoint);
 } catch { /* Use safe defaults for an interrupted settings write. */ }
+try {
+  const saved = JSON.parse(localStorage.getItem(storagePrefix + '-library') || '{}');
+  libraryState = { filter: typeof saved.filter === 'string' ? saved.filter : 'all', query: typeof saved.query === 'string' ? saved.query.slice(0, 160) : '', scrollTop: Math.max(0, Number(saved.scrollTop) || 0), categories: Array.isArray(saved.categories) ? saved.categories.map(categoryName).filter(Boolean) : [] };
+} catch { /* Library preferences are optional. */ }
 
 const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(qaSession ? { 'X-Clever-Test-Session': qaSession } : {}) });
 const isPresentation = () => ['ppt', 'pptx'].includes(active?.type) && Array.isArray(active?.slides);
@@ -207,14 +220,18 @@ function storage(store, method, value) {
 
 async function openStorage() {
   db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open(qaSession ? 'clever-read-qa-' + qaSession : 'clever-read', 1);
+    const request = indexedDB.open(qaSession ? 'clever-read-qa-' + qaSession : 'clever-read', 2);
     request.onupgradeneeded = () => {
-      for (const name of ['documents', 'records']) request.result.createObjectStore(name, { keyPath: 'id' });
+      for (const name of ['documents', 'records', 'readingStates']) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, { keyPath: 'id' });
     };
-    request.onsuccess = () => resolve(request.result);
+    let blocked = false;
+    request.onblocked = () => { blocked = true; reject(new Error('请关闭或刷新其他 Clever Read 页面，完成本地文档库升级。已有文档和阅读记录会保留。')); };
+    request.onsuccess = () => { if (blocked) { request.result.close(); return; } request.result.onversionchange = () => request.result.close(); resolve(request.result); };
     request.onerror = () => reject(request.error);
   });
+  const savedStates = await storage('readingStates', 'getAll');
   [documents, records] = await Promise.all([storage('documents', 'getAll'), storage('records', 'getAll')]);
+  for (const doc of documents) { const saved = savedStates.find(state => state.id === doc.id); if (saved) { doc.readingState = saved; doc.lastOpenedAt = saved.lastOpenedAt; } doc.category = categoryName(doc.category); }
   if (!documents.some(d => d.id === sampleDocument.id)) {
     const sample = structuredClone(sampleDocument);
     await storage('documents', 'put', sample);
@@ -237,9 +254,62 @@ function updateCounts() {
 }
 
 function renderLibrary() {
+  if (!db || !active) return;
   $('#document-switch').innerHTML = documents.map(doc => `<option value="${escape(doc.id)}" ${doc.id === active?.id ? 'selected' : ''}>${escape(doc.title)}${doc.type !== 'sample' ? ' · ' + doc.type.toUpperCase() : ''}</option>`).join('');
-  $('#document-list').innerHTML = documents.map(doc => `<div class="document-item ${doc.id === active?.id ? 'active' : ''}"><button class="document-open" data-document="${escape(doc.id)}" title="${escape(doc.title)}">${icon('file')}<div><span class="document-name">${escape(doc.title)}</span><span class="document-sub">${doc.type === 'sample' ? '教学示例' : doc.type.toUpperCase()} · ${doc.pages ? doc.pages + ' 页' : doc.blocks.length + ' 段'}</span></div></button>${doc.type !== 'sample' ? `<button class="icon-button document-delete" data-delete-document="${escape(doc.id)}" aria-label="移除 ${escape(doc.title)}">${icon('close')}</button>` : ''}</div>`).join('');
+  const names = categoryNames(documents, libraryState.categories);
+  if (libraryState.filter.startsWith('category:') && !names.includes(libraryState.filter.slice(9))) libraryState.filter = 'all';
+  const title = libraryState.filter === 'all' ? '文档库' : libraryState.filter === 'recent' ? '最近阅读' : libraryState.filter === 'uncategorized' ? '未分类' : libraryState.filter.slice(9);
+  $('#library-title').textContent = title; $('#library-list-title').textContent = libraryState.filter === 'all' ? '所有文档' : title;
+  $('#documents-count').textContent = documents.length;
+  $('#category-list').innerHTML = names.map(name => `<button class="nav-item" data-library-filter="${escape('category:' + name)}">${icon('folder')}<span>${escape(name)}</span></button>`).join('') + `<button class="nav-item" data-library-filter="uncategorized">${icon('folder')}<span>未分类</span></button><button class="nav-item mobile-category-add" data-action="new-category" aria-label="新建分类" title="新建分类">${icon('plus')}</button>`;
+  const filtered = filterDocuments(documents, libraryState.filter, libraryState.query);
+  $('#library-count').textContent = `${filtered.length} 份文档`;
+  $('#library-empty').classList.toggle('hidden', !!filtered.length);
+  $('#library-empty').textContent = libraryState.query ? '没有找到匹配的文档。' : libraryState.filter === 'recent' ? '打开文档后，会在这里保留阅读位置。' : '这个分类还没有文档，可以在文档列表中调整分类。';
+  $('#document-list').innerHTML = filtered.map(doc => `<div class="library-document-row"><button class="library-document-open" data-document="${escape(doc.id)}">${icon('file')}<span class="library-document-copy"><span class="library-document-title">${escape(doc.title)}</span><span class="library-document-meta">${escape(documentMeta(doc))}</span></span></button><select class="document-category" data-category-document="${escape(doc.id)}" aria-label="${escape(doc.title)} 的分类"><option value="">未分类</option>${names.map(name => `<option value="${escape(name)}" ${name === doc.category ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select><span class="library-document-position">${escape(readingPosition(doc))}</span>${doc.type !== 'sample' ? `<button class="icon-button library-document-delete" data-delete-document="${escape(doc.id)}" aria-label="移除 ${escape(doc.title)}">${icon('trash')}</button>` : '<span></span>'}</div>`).join('');
+  const last = documents.filter(doc => doc.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
+  $('#resume-reading').classList.toggle('hidden', !last);
+  if (last) { $('#resume-document').dataset.document = last.id; $('#resume-title').textContent = last.title; $('#resume-position').textContent = readingPosition(last) + (last.readingState?.selected?.text ? ' · ' + last.readingState.selected.text.slice(0, 60) : ' · ' + documentMeta(last)); }
+  updateLibraryNavigation();
   updateCounts();
+}
+
+function updateLibraryNavigation() {
+  $$('[data-library-filter]').forEach(button => { const selected = view === 'library' && button.dataset.libraryFilter === libraryState.filter; button.classList.toggle('active', selected); if (selected) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
+}
+function persistLibrary() { try { localStorage.setItem(storagePrefix + '-library', JSON.stringify(libraryState)); } catch { /* Search remains available. */ } }
+function readingPositionSnapshot() {
+  const scroll = $('#reading-scroll'), top = scroll.getBoundingClientRect().top;
+  const selector = isPresentation() ? '.ppt-slide' : pdfMode === 'original' ? '.pdf-page' : '[data-block]';
+  const elements = $$(selector); let anchor = elements[0];
+  for (const element of elements) { if (element.getBoundingClientRect().top <= top + 8) anchor = element; else break; }
+  return { scrollTop: scroll.scrollTop, scrollLeft: scroll.scrollLeft, ...(scroll.scrollTop > 0 && anchor ? { position: { ...(anchor.dataset.page ? { page: Number(anchor.dataset.page) } : { blockId: anchor.dataset.block }), offset: top - anchor.getBoundingClientRect().top } } : {}) };
+}
+function restoreReadingPosition(saved) {
+  if (!saved || view !== 'reader') return;
+  restoringPosition = true;
+  const element = saved.position?.page ? $(`${isPresentation() ? '.ppt-slide' : '.pdf-page'}[data-page="${Number(saved.position.page)}"]`) : saved.position?.blockId ? $$('[data-block]').find(el => el.dataset.block === saved.position.blockId) : null;
+  const scroll = $('#reading-scroll');
+  scroll.scrollTop = element ? scroll.scrollTop + element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + (saved.position.offset || 0) : saved.scrollTop || 0;
+  scroll.scrollLeft = saved.scrollLeft || 0; updateProgress();
+  requestAnimationFrame(() => { restoringPosition = false; });
+}
+function rememberReader(persist = true) {
+  if (!active || readerDocumentId !== active.id || view !== 'reader' || restoringPosition) return;
+  const position = readingPositionSnapshot(), selected = selection ? { ...selection } : null;
+  if (selected) delete selected.image;
+  const max = $('#reading-scroll').scrollHeight - $('#reading-scroll').clientHeight;
+  active.readingState = { id: active.id, lastOpenedAt: active.lastOpenedAt, ...position, progress: max > 0 ? Math.max(0, Math.min(1, position.scrollTop / max)) : 1, selected, recordId: currentRecord?.id, pdfMode, pdfZoom, slideMode, slideZoom, selectMode, focused: workspaceLayout?.getState().focused || false, draft: $('#question').value };
+  readerSessions.set(active.id, { selection, currentRecord, history: [...history], panel, previewExpanded, assistantScroll: $('#assistant-body').scrollTop });
+  if (persist) storage('readingStates', 'put', active.readingState).catch(() => toast('阅读位置未能保存，请检查浏览器存储空间。'));
+}
+function navigateView(next) {
+  if (next === view) return;
+  if (view === 'library') { libraryState.scrollTop = $('#library-view').scrollTop; persistLibrary(); }
+  rememberReader();
+  view = next; updateView();
+  if (next === 'library') { renderLibrary(); requestAnimationFrame(() => { $('#library-view').scrollTop = libraryState.scrollTop; }); }
+  revealSurface($(next === 'library' ? '#library-view' : next === 'reader' ? '#reader-view' : '#collection-view'));
 }
 
 function annotateTerms(text) {
@@ -293,7 +363,8 @@ async function renderOriginalPdf() {
   const firstViewport = first.getViewport({ scale: 1 });
   const readingStyle = getComputedStyle($('#reading-scroll'));
   const available = Math.max(200, $('#reading-scroll').clientWidth - parseFloat(readingStyle.paddingLeft) - parseFloat(readingStyle.paddingRight));
-  const width = Math.min(850, available) * pdfZoom;
+  const preferred = parseFloat(getComputedStyle($('#reader-view')).getPropertyValue('--reading-page-width')) || 850;
+  const width = Math.min(preferred, available) * pdfZoom;
   const scale = width / firstViewport.width;
   $('#document-content').innerHTML = Array.from({ length: loaded.numPages }, (_, i) => `<div class="pdf-page" data-page="${i + 1}" style="width:${width}px;height:${firstViewport.height * scale}px"><span class="pdf-page-label">${i + 1} / ${loaded.numPages}</span><div class="pdf-placeholder">第 ${i + 1} 页</div></div>`).join('');
   pageObserver = new IntersectionObserver(entries => {
@@ -351,20 +422,53 @@ function clearSelection() {
 }
 
 async function openDocument(id, restorePosition = true) {
+  if (view === 'library') { libraryState.scrollTop = $('#library-view').scrollTop; persistLibrary(); }
+  if (id === readerDocumentId && restorePosition) {
+    view = 'reader'; updateView(); active.lastOpenedAt = Date.now();
+    requestAnimationFrame(() => { restoreReadingPosition(active.readingState); rememberReader(); });
+    $('#reader-view .reader-toolbar button')?.focus({ preventScroll: true });
+    return;
+  }
+  const generation = ++openGeneration;
   const previousDocument = active?.id;
+  rememberReader();
   clearTimeout(scrollTimer);
   stopRequest(); clearSelection(); currentRecord = null; panel = 'explain';
+  readerDocumentId = null;
   await teardownPdf();
+  if (generation !== openGeneration) return;
   slideReader.destroy();
   active = documents.find(d => d.id === id) || documents[0];
-  pdfMode = 'reflow'; pdfZoom = 1;
-  slideMode = 'region'; slideZoom = 1;
+  const saved = restorePosition ? active.readingState : null;
+  const session = restorePosition ? readerSessions.get(active.id) : null;
+  pdfMode = saved?.pdfMode === 'original' && active.type === 'pdf' ? 'original' : 'reflow'; pdfZoom = Math.max(.6, Math.min(1.6, saved?.pdfZoom || 1));
+  slideMode = saved?.slideMode === 'text' ? 'text' : 'region'; slideZoom = Math.max(.6, Math.min(1.6, saved?.slideZoom || 1));
+  selectMode = saved?.selectMode === 'sentence' ? 'sentence' : 'word';
+  active.lastOpenedAt = Date.now();
   view = 'reader';
-  updateView(); renderLibrary(); renderAssistant();
+  updateView(); workspaceLayout?.setState({ focused: !!saved?.focused }); renderLibrary();
   if (isPresentation()) {
     $('#slide-number').innerHTML = active.slides.map(slide => `<option value="${slide.page}">${slide.page} / ${active.pages}</option>`).join('');
     slideReader.render(active, slideMode, slideZoom);
-  } else renderText();
+  } else if (pdfMode === 'original') await renderOriginalPdf(); else renderText();
+  if (generation !== openGeneration) return;
+  readerDocumentId = active.id;
+  currentRecord = session?.currentRecord || records.find(record => record.id === saved?.recordId && record.docId === active.id) || null;
+  selection = session?.selection || (currentRecord ? structuredClone(currentRecord.selected) : saved?.selected || null);
+  history = session?.history || (currentRecord?.result.mode === 'model' ? [{ role: 'user', content: currentRecord.question || '解释当前选区' }, { role: 'assistant', content: JSON.stringify(currentRecord.result) }] : []);
+  panel = session?.panel || 'explain'; previewExpanded = session?.previewExpanded || false;
+  $('#question').value = saved?.draft || ''; sizeQuestion();
+  $('#question-anchor').textContent = selection ? '针对选区：' + selection.text : '先在原文中选择一个词或句子';
+  renderAssistant();
+  if (isPresentation() && selection?.region) {
+    slideReader.showSelection(selection);
+    if (selection.includeImage && !selection.image) { const canvas = $(`.ppt-slide[data-page="${Number(selection.page)}"] .slide-canvas`); if (canvas) await slideReader.selectRegion(canvas, selection.region, true); }
+  } else if (selection?.blockId && pdfMode === 'reflow') {
+    const paragraph = $$('[data-block]').find(el => el.dataset.block === selection.blockId);
+    const at = paragraph?.textContent.indexOf(selection.text) ?? -1;
+    if (at >= 0) { selectionRange = rangeForOffsets(paragraph, at, at + selection.text.length); if (selectionRange && globalThis.Highlight && CSS.highlights) CSS.highlights.set('read-selection', new Highlight(selectionRange)); }
+  }
+  if (generation !== openGeneration) return;
   $('#pdf-mode').classList.toggle('hidden', active.type !== 'pdf');
   setPressed('[data-pdf-mode]', b => b.dataset.pdfMode === pdfMode);
   $('#ppt-mode').classList.toggle('hidden', !isPresentation());
@@ -372,28 +476,33 @@ async function openDocument(id, restorePosition = true) {
   $('[data-select-mode]').closest('.reading-mode').classList.toggle('hidden', isPresentation());
   $('#click-assist').closest('label').classList.toggle('hidden', isPresentation());
   setPressed('[data-slide-mode]', b => b.dataset.slideMode === slideMode);
+  setPressed('[data-select-mode]', b => b.dataset.selectMode === selectMode);
   $('#slide-hint').textContent = '拖动框选图片或文字，再向右侧助手提问';
-  $('#font-value').textContent = isPresentation() ? '100%' : fontSize;
+  $('#font-value').textContent = isPresentation() ? Math.round(slideZoom * 100) + '%' : pdfMode === 'original' ? Math.round(pdfZoom * 100) + '%' : fontSize;
   $('#breadcrumb-title').textContent = active.title;
   $('#doc-meta').textContent = isPresentation() ? `${active.pages} 张幻灯片 · ${active.renderer || '演示文稿'} 原版` : active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
   try { localStorage.setItem(storagePrefix + '-active', active.id); } catch { /* Nonessential preference. */ }
-  requestAnimationFrame(() => { $('#reading-scroll').scrollTop = restorePosition ? active.scrollTop || 0 : 0; updateProgress(); });
+  requestAnimationFrame(() => { if (generation !== openGeneration) return; restoreReadingPosition(saved || { scrollTop: restorePosition ? active.scrollTop || 0 : 0 }); $('#assistant-body').scrollTop = session?.assistantScroll || 0; requestAnimationFrame(() => rememberReader()); });
   if (previousDocument && previousDocument !== active.id) revealSurface($('#document-content'));
 }
 
 function updateView() {
+  $('.app-shell').dataset.view = view;
   $('#focus-toggle').classList.toggle('hidden', view !== 'reader');
+  $('.reader-back').classList.toggle('hidden', view !== 'reader');
+  $('#library-view').classList.toggle('hidden', view !== 'library');
   $('#reader-view').classList.toggle('hidden', view !== 'reader');
-  $('#collection-view').classList.toggle('hidden', view === 'reader');
+  $('#collection-view').classList.toggle('hidden', !['notes', 'terms'].includes(view));
   $$('[data-view]').forEach(b => {
     const current = b.dataset.view === view;
     b.classList.toggle('active', current);
     if (current) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
-  syncSegment($('.main-nav'));
-  $('#view-label').textContent = view === 'reader' ? '阅读工作台' : view === 'notes' ? '阅读记录' : '我的术语本';
+  updateLibraryNavigation(); workspaceLayout?.refresh();
+  $('#view-label').textContent = view === 'library' ? '本机阅读空间' : view === 'reader' ? '' : view === 'notes' ? '阅读记录' : '我的术语本';
   $('#breadcrumb-title').textContent = view === 'reader' ? active?.title || '' : '我的阅读空间';
-  if (view !== 'reader') { $('#selection-tools').classList.add('hidden'); renderCollection(); }
+  document.title = view === 'reader' ? `${active?.title || '阅读'} · Clever Read` : `${view === 'library' ? '文档库' : $('#view-label').textContent} · Clever Read`;
+  if (view !== 'reader') { $('#selection-tools').classList.add('hidden'); if (view !== 'library') renderCollection(); }
 }
 
 function quoteHtml(selected) {
@@ -451,6 +560,8 @@ function setSelection(value, range) {
   if (selectionRange && globalThis.Highlight && CSS.highlights) CSS.highlights.set('read-selection', new Highlight(selectionRange));
   $('#question-anchor').textContent = '针对选区：' + text;
   renderAssistant();
+  workspaceLayout?.revealAssistant();
+  rememberReader();
   return true;
 }
 
@@ -600,6 +711,8 @@ async function ask(action, question = '') {
     $('#assistant-body').scrollTop = 0;
     $('#question').value = '';
     sizeQuestion();
+    if (view === 'reader') rememberReader();
+    else if (active.readingState) { const selectedState = { ...selected }; delete selectedState.image; active.readingState = { ...active.readingState, recordId: record.id, selected: selectedState, draft: '' }; await storage('readingStates', 'put', active.readingState); const session = readerSessions.get(active.id); if (session) Object.assign(session, { currentRecord: record, history: [...history] }); }
   } catch (error) {
     if (generation !== requestGeneration || error.name === 'AbortError') return;
     $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="error-state">${escape(error.message)}<br><button data-action="settings">检查模型设置</button></div>`;
@@ -611,8 +724,10 @@ async function ask(action, question = '') {
 async function showRecord(id) {
   const record = records.find(r => r.id === id);
   if (!record) return;
-  if (documents.some(d => d.id === record.docId) && record.docId !== active?.id) await openDocument(record.docId);
+  if (documents.some(d => d.id === record.docId) && record.docId !== readerDocumentId) await openDocument(record.docId);
+  else if (!readerDocumentId) await openDocument(active?.id || documents[0].id);
   view = 'reader'; updateView();
+  workspaceLayout?.revealAssistant();
   stopRequest();
   selection = structuredClone(record.selected); currentRecord = record; panel = 'explain'; history = [];
   if (record.result.mode === 'model') history = [{ role: 'user', content: record.question || '解释当前选区' }, { role: 'assistant', content: JSON.stringify(record.result) }];
@@ -624,6 +739,7 @@ async function showRecord(id) {
   }
   renderAssistant();
   if (isPresentation() && selection?.region) { slideReader.jump(selection.page, scrollBehavior()); slideReader.showSelection(selection); }
+  rememberReader();
 }
 
 async function jumpToSource(id) {
@@ -669,6 +785,7 @@ function fillModelDraft(profile = null) {
 }
 
 function showSettings() {
+  $('#resume-on-launch').checked = settings.resumeOnLaunch;
   $('#depth').value = settings.depth;
   $('#use-model').checked = settings.enabled;
   renderProfiles();
@@ -706,6 +823,7 @@ $('#settings-form').addEventListener('submit', async event => {
       settings = { ...settings, enabled, endpoint, model, profileId: '', vision };
     }
     settings.depth = $('#depth').value;
+    settings.resumeOnLaunch = $('#resume-on-launch').checked;
     persistPreferences(); updateModelStatus(); answerCache.clear();
     $('#api-key').value = '';
     $('#settings-dialog').close(); toast(model !== enteredModel ? `设置已保存。模型名称已转换为 ${model}。` : '设置已保存。'); renderAssistant();
@@ -727,6 +845,7 @@ function importProgress(text, page, total) {
 }
 
 async function saveDocument(doc) {
+  if (libraryState.filter.startsWith('category:')) doc.category = libraryState.filter.slice(9);
   await storage('documents', 'put', doc);
   documents.unshift(doc);
   $('#import-dialog').close();
@@ -796,6 +915,21 @@ $('#text-import').addEventListener('submit', async event => {
 $('#question-form').addEventListener('submit', event => { event.preventDefault(); if ($('#question-form button').disabled) return; const q = $('#question').value.trim(); if (q) ask('ask', q); else toast('请输入想问的问题。'); });
 $('#question').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('#question-form').requestSubmit(); } });
 $('#question').addEventListener('input', sizeQuestion);
+$('#question').addEventListener('input', () => { clearTimeout(scrollTimer); scrollTimer = setTimeout(() => rememberReader(), 500); });
+$('#library-search').addEventListener('input', event => { libraryState.query = event.target.value; libraryState.scrollTop = 0; renderLibrary(); persistLibrary(); });
+$('#library-view').addEventListener('scroll', () => { if (view === 'library') { libraryState.scrollTop = $('#library-view').scrollTop; persistLibrary(); } }, { passive: true });
+$('#document-list').addEventListener('change', async event => {
+  const id = event.target.dataset.categoryDocument, doc = documents.find(doc => doc.id === id);
+  if (!doc) return;
+  const previous = doc.category; doc.category = categoryName(event.target.value);
+  try { const stored = { ...doc }; delete stored.readingState; delete stored.lastOpenedAt; await storage('documents', 'put', stored); renderLibrary(); $$('[data-category-document]').find(el => el.dataset.categoryDocument === id)?.focus({ preventScroll: true }); }
+  catch { doc.category = previous; event.target.value = previous || ''; toast('分类未能保存，请检查浏览器存储空间。'); }
+});
+$('#category-form').addEventListener('submit', event => {
+  event.preventDefault(); const name = categoryName($('#category-name').value), names = categoryNames(documents, libraryState.categories);
+  if (!name || name === '未分类' || names.includes(name)) { $('#category-error').textContent = !name ? '请输入分类名称。' : '这个分类已经存在。'; $('#category-error').classList.remove('hidden'); return; }
+  libraryState.categories.push(name); persistLibrary(); renderLibrary(); $('#category-dialog').close(); toast('分类已创建，可在文档列表中选择。');
+});
 $('#record-search').addEventListener('input', renderCollection);
 $('#click-assist').addEventListener('change', () => { settings.clickAssist = $('#click-assist').checked; persistPreferences(); });
 $('#document-switch').addEventListener('change', event => openDocument(event.target.value).catch(error => toast(error.message)));
@@ -813,11 +947,9 @@ function updateProgress() {
 }
 let scrollTimer;
 $('#reading-scroll').addEventListener('scroll', () => {
+  if (view !== 'reader' || restoringPosition) return;
   updateProgress(); $('#selection-tools').classList.add('hidden'); clearTimeout(scrollTimer);
-  const doc = active;
-  const position = $('#reading-scroll').scrollTop;
-  if (pdfMode !== 'reflow') return;
-  scrollTimer = setTimeout(async () => { if (doc) { doc.scrollTop = position; try { await storage('documents', 'put', doc); } catch { /* Reading remains available even if a preference cannot be saved. */ } } }, 500);
+  scrollTimer = setTimeout(() => rememberReader(), 350);
 }, { passive: true });
 
 async function confirmRemoval(title, message) {
@@ -848,7 +980,8 @@ document.addEventListener('click', async event => {
   if (!button) return;
   try {
     if (button.dataset.close) { if (importing && button.dataset.close === 'import-dialog') return toast('正在解析文档，请稍候。'); $('#' + button.dataset.close).close(); return; }
-    if (button.dataset.view) { const changed = view !== button.dataset.view; view = button.dataset.view; updateView(); if (changed) revealSurface($(view === 'reader' ? '#reader-view' : '#collection-view')); return; }
+    if (button.dataset.libraryFilter) { navigateView('library'); libraryState.filter = button.dataset.libraryFilter; libraryState.scrollTop = 0; $('#library-view').scrollTop = 0; renderLibrary(); persistLibrary(); return; }
+    if (button.dataset.view) { navigateView(button.dataset.view); return; }
     if (button.dataset.document) { await openDocument(button.dataset.document); return; }
     if (button.dataset.panel) { const changed = panel !== button.dataset.panel; panel = button.dataset.panel; renderAssistant(); if (changed) revealSurface($('#assistant-body'), 3); return; }
     if (button.dataset.selectMode) { selectMode = button.dataset.selectMode; setPressed('[data-select-mode]', b => b === button); return; }
@@ -886,7 +1019,9 @@ document.addEventListener('click', async event => {
       const doc = documents.find(d => d.id === button.dataset.deleteDocument);
       if (await confirmRemoval('移除这份文档？', `“${doc.title}”将从此浏览器移除。阅读记录会保留，但无法再跳转原文。`)) {
         await storage('documents', 'delete', doc.id); documents = documents.filter(d => d.id !== doc.id);
-        if (active.id === doc.id) await openDocument(documents[0].id); else renderLibrary();
+        await storage('readingStates', 'delete', doc.id); readerSessions.delete(doc.id);
+        if (active?.id === doc.id) { stopRequest(); clearSelection(); await teardownPdf(); slideReader.destroy(); readerDocumentId = null; currentRecord = null; active = documents[0]; navigateView('library'); }
+        renderLibrary();
       }
       return;
     }
@@ -911,13 +1046,14 @@ document.addEventListener('click', async event => {
     const action = button.dataset.action;
     if (action === 'import') { $('#import-progress').classList.add('hidden'); $('#import-dialog').showModal(); }
     else if (action === 'settings') showSettings();
+    else if (action === 'new-category') { $('#category-form').reset(); $('#category-error').classList.add('hidden'); $('#category-dialog').showModal(); }
     else if (action === 'new-profile') { fillModelDraft(); editingProfileId = ''; ['#profile-name', '#endpoint', '#model', '#api-key'].forEach(selector => $(selector).value = ''); $('#model-vision').checked = false; $('#use-model').checked = true; $('#profile-name').focus(); }
     else if (action === 'text-only' && selection?.hasText) { setSelection({ ...selection, includeImage: false }); renderAssistant(); toast('接下来的提问只发送选区文字。'); }
     else if (action === 'slide-previous' || action === 'slide-next') slideReader.jump(slideReader.current + (action === 'slide-next' ? 1 : -1), scrollBehavior());
     else if (action === 'explain' || action === 'logic') await ask(action);
     else if (action === 'ask-focus') { workspaceLayout?.revealAssistant(); $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
-    else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
-    else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
+    else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
+    else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
     else if (action === 'cancel-request') { stopRequest(); renderAssistant(); }
     else if (action === 'star-current' && currentRecord) {
       currentRecord.starred = !currentRecord.starred; await storage('records', 'put', currentRecord);
@@ -953,12 +1089,25 @@ document.addEventListener('keydown', event => {
 });
 $('#assistant-body').addEventListener('toggle', event => { if (event.target.matches('.selection-preview')) previewExpanded = event.target.open; }, true);
 let resizeTimer;
-window.addEventListener('resize', () => { syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer); if (isPresentation()) resizeTimer = setTimeout(() => { const page = slideReader.current; slideReader.render(active, slideMode, slideZoom); slideReader.jump(page); if (selection?.region) slideReader.showSelection(selection); }, 200); else if (pdfMode === 'original') resizeTimer = setTimeout(async () => { try { await teardownPdf(); await renderOriginalPdf(); } catch { toast('PDF 页面重绘失败，请切换阅读模式重试。'); } }, 300); });
+window.addEventListener('resize', () => {
+  syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer);
+  if (view !== 'reader') return;
+  const documentId = active?.id, position = readingPositionSnapshot();
+  resizeTimer = setTimeout(async () => {
+    if (view !== 'reader' || active?.id !== documentId) return;
+    try {
+      if (isPresentation()) { slideReader.render(active, slideMode, slideZoom); if (selection?.region) slideReader.showSelection(selection); }
+      else if (pdfMode === 'original') { await teardownPdf(); if (view !== 'reader' || active?.id !== documentId) return; await renderOriginalPdf(); }
+      else return;
+      if (view === 'reader' && active?.id === documentId) requestAnimationFrame(() => { restoreReadingPosition(position); requestAnimationFrame(() => rememberReader()); });
+    } catch { toast('页面重绘失败，请切换阅读模式重试。'); }
+  }, isPresentation() ? 200 : 300);
+});
 
 async function init() {
   hydrateIcons();
-  workspaceLayout = initWorkspaceLayout(storagePrefix);
-  new ResizeObserver(() => { if (isPresentation()) slideReader.resize(); }).observe($('#reading-scroll'));
+  workspaceLayout = initWorkspaceLayout(storagePrefix, { beforeChange: () => { if (view !== 'reader') return null; rememberReader(); return readingPositionSnapshot(); }, afterChange: position => { if (active?.readingState) { active.readingState.focused = workspaceLayout.getState().focused; storage('readingStates', 'put', active.readingState).catch(() => {}); } if (isPresentation() && view === 'reader') slideReader.resize(); if (position) requestAnimationFrame(() => { restoreReadingPosition(position); requestAnimationFrame(() => rememberReader()); }); } });
+  new ResizeObserver(() => { if (isPresentation() && view === 'reader') slideReader.resize(); }).observe($('#reading-scroll'));
   const segmentObserver = new ResizeObserver(entries => entries.forEach(entry => syncSegment(entry.target)));
   $$('[data-segmented]').forEach(group => segmentObserver.observe(group));
   syncSegments();
@@ -971,10 +1120,23 @@ async function init() {
     await openStorage();
     let id;
     try { id = localStorage.getItem(storagePrefix + '-active'); } catch { /* Nonessential preference. */ }
-    await openDocument(id || documents[0].id);
+    active = documents.find(doc => doc.id === id) || documents[0];
+    // Bring the last document from the previous reader into the new library.
+    if (active?.id === id && !active.readingState) {
+      active.lastOpenedAt = active.createdAt || Date.now();
+      active.readingState = { id, lastOpenedAt: active.lastOpenedAt, scrollTop: active.scrollTop || 0, scrollLeft: 0 };
+      await storage('readingStates', 'put', active.readingState);
+    }
+    $('#library-search').value = libraryState.query;
+    if (settings.resumeOnLaunch && id && documents.some(doc => doc.id === id)) await openDocument(id);
+    else { updateView(); renderLibrary(); $('#library-view').scrollTop = libraryState.scrollTop; }
   } catch (error) {
-    $('#document-content').innerHTML = `<div class="error-state">无法打开本地存储。请使用普通浏览器窗口并允许站点存储，然后刷新页面。${escape(error.message)}</div>`;
+    $('#library-empty').classList.add('hidden');
+    $('#library-count').textContent = '本机文档库暂不可用';
+    $('#document-list').innerHTML = `<div class="error-state">无法打开本地存储。${escape(error.message)}</div>`;
   }
 }
 
 init();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') rememberReader(); });
+window.addEventListener('pagehide', () => rememberReader());
