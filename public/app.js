@@ -33,11 +33,14 @@ const paths = {
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
-  sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
   focus: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   back: '<path d="M20 12H4m6-6-6 6 6 6"/>',
   library: '<path d="M4 3v18M8 3v18M12 3v18m4-17 5 16"/>',
+  more: '<circle cx="5" cy="12" r=".8"/><circle cx="12" cy="12" r=".8"/><circle cx="19" cy="12" r=".8"/>',
+  slides: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M12 17v4m-4 0h8M7 12l3-3 3 3 4-5"/>',
+  pdf: '<path d="M5 3h9l5 5v13H5zM14 3v5h5M8 16l3-7 3 7m-5-2h6"/>',
   folder: '<path d="M3 6h7l2 2h9v12H3z"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.file}</svg>`;
@@ -137,6 +140,8 @@ let profiles = [];
 let vaultState = { activeId: '', protection: '' };
 let vaultError = '';
 let editingProfileId = '';
+let settingsPane = 'reading';
+let termPeekRange = null;
 let slideMode = 'region';
 let slideZoom = 1;
 let importing = false;
@@ -266,7 +271,7 @@ function renderLibrary() {
   $('#library-count').textContent = `${filtered.length} 份文档`;
   $('#library-empty').classList.toggle('hidden', !!filtered.length);
   $('#library-empty').textContent = libraryState.query ? '没有找到匹配的文档。' : libraryState.filter === 'recent' ? '打开文档后，会在这里保留阅读位置。' : '这个分类还没有文档，可以在文档列表中调整分类。';
-  $('#document-list').innerHTML = filtered.map(doc => `<div class="library-document-row"><button class="library-document-open" data-document="${escape(doc.id)}">${icon('file')}<span class="library-document-copy"><span class="library-document-title">${escape(doc.title)}</span><span class="library-document-meta">${escape(documentMeta(doc))}</span></span></button><select class="document-category" data-category-document="${escape(doc.id)}" aria-label="${escape(doc.title)} 的分类"><option value="">未分类</option>${names.map(name => `<option value="${escape(name)}" ${name === doc.category ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select><span class="library-document-position">${escape(readingPosition(doc))}</span>${doc.type !== 'sample' ? `<button class="icon-button library-document-delete" data-delete-document="${escape(doc.id)}" aria-label="移除 ${escape(doc.title)}">${icon('trash')}</button>` : '<span></span>'}</div>`).join('');
+  $('#document-list').innerHTML = filtered.map(doc => `<div class="library-document-row"><button class="library-document-open" data-document="${escape(doc.id)}"><span class="document-glyph" data-format="${escape(doc.type)}">${icon(['ppt', 'pptx'].includes(doc.type) ? 'slides' : doc.type === 'pdf' ? 'pdf' : 'file')}</span><span class="library-document-copy"><span class="library-document-title">${escape(doc.title)}</span><span class="library-document-meta">${escape(documentMeta(doc))}</span></span></button><select class="document-category" data-category-document="${escape(doc.id)}" aria-label="${escape(doc.title)} 的分类"><option value="">未分类</option>${names.map(name => `<option value="${escape(name)}" ${name === doc.category ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select><span class="library-document-position">${escape(readingPosition(doc))}</span><div class="document-row-actions"><button class="icon-button document-more" popovertarget="doc-menu-${escape(doc.id)}" aria-label="${escape(doc.title)} 的更多操作">${icon('more')}</button><div id="doc-menu-${escape(doc.id)}" class="document-menu" popover="auto"><button data-document="${escape(doc.id)}">${icon('open-book')}打开阅读</button>${doc.type !== 'sample' ? `<button class="menu-danger" data-delete-document="${escape(doc.id)}">${icon('trash')}移除文档</button>` : ''}</div></div></div>`).join('');
   const last = documents.filter(doc => doc.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
   $('#resume-reading').classList.toggle('hidden', !last);
   if (last) { $('#resume-document').dataset.document = last.id; $('#resume-title').textContent = last.title; $('#resume-position').textContent = readingPosition(last) + (last.readingState?.selected?.text ? ' · ' + last.readingState.selected.text.slice(0, 60) : ' · ' + documentMeta(last)); }
@@ -411,6 +416,7 @@ function stopRequest() {
 }
 
 function clearSelection() {
+  closeTermPeek();
   slideReader.cancelInteraction();
   selection = null; selectionRange = null; history = [];
   previewExpanded = false;
@@ -487,6 +493,7 @@ async function openDocument(id, restorePosition = true) {
 }
 
 function updateView() {
+  closeTermPeek();
   $('.app-shell').dataset.view = view;
   $('#focus-toggle').classList.toggle('hidden', view !== 'reader');
   $('.reader-back').classList.toggle('hidden', view !== 'reader');
@@ -534,8 +541,30 @@ function renderAssistant() {
 function renderAnswer(record) {
   const r = record.result;
   const sources = record.contexts.filter(c => r.sources.includes(c.id));
-  const question = record.question ? `<div class="answer-mode">${icon('message')}${escape(record.question)}</div>` : '';
-  $('#assistant-body').innerHTML = `${quoteHtml(record.selected)}<div class="answer-mode">${icon(r.mode === 'model' ? 'sparkles' : 'book')}${r.mode === 'model' ? '模型解读 · ' + escape(record.depth) : '本地辅助 · 未调用模型'}</div>${question}<h2 class="answer-title">${escape(r.title)}</h2><div class="answer-summary">${escape(r.summary)}</div>${r.context ? `<div class="answer-section-title">${icon('open-book')}本文语境</div><div class="answer-context">${escape(r.context)}</div>` : ''}${r.logic.length ? `<div class="answer-section-title">${icon('layers')}逻辑拆解</div><ol class="answer-logic">${r.logic.map(item => `<li>${escape(item)}</li>`).join('')}</ol>` : ''}${sources.length ? `<div class="answer-section-title">${icon('link')}${r.mode === 'model' ? '原文依据' : '相关原文'}</div>${sources.map(c => `<button class="source-card" data-source="${escape(c.id)}"><span class="source-meta">${icon('file')}${escape(c.page ? '第 ' + c.page + ' 页' : c.section)} · 返回原文</span><span class="source-text">${escape(c.text)}</span></button>`).join('')}` : ''}<div class="answer-limits">${escape(r.limitations)}</div><div class="answer-actions"><button data-action="star-current">${icon(record.starred ? 'check' : 'bookmark')}${record.starred ? '已加入术语本' : '加入术语本'}</button><button data-action="copy-answer">${icon('copy')}复制</button>${r.mode !== 'model' ? `<button data-action="settings">${icon('settings')}连接模型</button>` : ''}</div>${r.mode === 'model' ? '<div class="followup-heading">继续想一想</div><button class="followup" data-followup="这段内容依赖哪些假设？">这段内容依赖哪些假设？</button><button class="followup" data-followup="能用一个具体例子解释吗？">能用一个具体例子解释吗？</button>' : ''}`;
+  const question = record.question ? `<p class="answer-question">${escape(record.question)}</p>` : '';
+  const detail = (title, content, open = false) => `<details class="answer-detail"${open ? ' open' : ''}><summary>${title}${icon('chevron')}</summary>${content}</details>`;
+  $('#assistant-body').innerHTML = `${quoteHtml(record.selected)}<div class="answer-mode">${r.mode === 'model' ? '模型解读 · ' + escape(record.depth) : '本地辅助 · 未调用模型'}</div>${question}<h2 class="answer-title">${escape(r.title)}</h2><div class="answer-summary">${escape(r.summary)}</div>${r.context ? detail('本文语境', `<div class="answer-context">${escape(r.context)}</div>`) : ''}${r.logic.length ? detail('逻辑拆解', `<ol class="answer-logic">${r.logic.map(item => `<li>${escape(item)}</li>`).join('')}</ol>`, record.action === 'logic') : ''}${sources.length ? `<div class="answer-sources"><span>${r.mode === 'model' ? '原文依据' : '相关原文'}</span><div class="source-links">${sources.map((c, i) => `<button class="source-link" data-source="${escape(c.id)}" title="${escape(c.text)}">${i + 1} · ${escape(c.page ? '第 ' + c.page + (record.selected.sourceType === 'slide' ? ' 张' : ' 页') : c.section)}${icon('arrow-right')}</button>`).join('')}</div></div>` : ''}${r.limitations ? `<div class="answer-limits">${escape(r.limitations)}</div>` : ''}<div class="answer-actions"><button data-action="star-current">${icon(record.starred ? 'check' : 'bookmark')}${record.starred ? '已收藏' : '加入术语本'}</button><button data-action="copy-answer">${icon('copy')}复制</button>${r.mode !== 'model' ? `<button data-action="settings">${icon('settings')}连接模型</button>` : ''}</div>`;
+}
+
+function closeTermPeek() { termPeekRange = null; $('#term-peek').classList.add('hidden'); }
+function positionTermPeek() {
+  if (!termPeekRange || view !== 'reader') return closeTermPeek();
+  const rect = termPeekRange.getBoundingClientRect(), peek = $('#term-peek');
+  const reading = $('#reading-scroll').getBoundingClientRect();
+  if (!rect.width || rect.bottom < reading.top || rect.top > reading.bottom) return closeTermPeek();
+  const left = Math.max(12, Math.min(rect.left, innerWidth - peek.offsetWidth - 12));
+  const below = rect.bottom + 10;
+  const top = below + peek.offsetHeight <= innerHeight - 12 ? below : Math.max(12, rect.top - peek.offsetHeight - 10);
+  peek.style.left = left + 'px'; peek.style.top = top + 'px';
+}
+function renderTermPeek(pending = false, error = '') {
+  if (!termPeekRange || view !== 'reader') return;
+  const peek = $('#term-peek');
+  const result = currentRecord?.result;
+  peek.innerHTML = `<div class="term-peek-heading"><strong>${escape(selection.text)}</strong><button class="icon-button" data-action="close-peek" aria-label="关闭术语解释">${icon('close')}</button></div><p class="term-peek-status">${pending ? '正在解读…' : error ? '解读未完成' : result?.mode === 'model' ? '模型解读' : '本地辅助 · 未调用模型'}</p><div class="term-peek-copy">${escape(error || (pending ? '结合选词与相关原文。' : result?.summary || ''))}</div><div class="term-peek-actions">${pending ? '<button data-action="cancel-request">取消</button>' : ''}<button data-action="peek-detail">${error ? '检查模型设置' : '查看完整解读'}${icon('arrow-right')}</button><button data-action="ask-focus">提问</button></div>`;
+  peek.dataset.error = String(!!error);
+  peek.setAttribute('aria-busy', String(pending));
+  peek.classList.remove('hidden'); positionTermPeek();
 }
 
 function timeLabel(timestamp) { return new Date(timestamp).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Shanghai' }); }
@@ -548,7 +577,8 @@ function renderCollection() {
   $('#records-list').innerHTML = filtered.length ? filtered.map(r => `<article class="record-card"><div class="record-card-meta"><span>${escape(r.docTitle)}</span><span>${timeLabel(r.createdAt)}</span></div><h2>${escape(r.result.title)}</h2><blockquote>${escape(r.selected.text)}</blockquote><p>${escape(r.result.summary)}</p><div class="record-card-footer"><button data-record="${escape(r.id)}">${icon('open-book')}查看解读</button><button data-delete-record="${escape(r.id)}" aria-label="删除这条记录">${icon('trash')}</button></div></article>`).join('') : `<div class="empty-collection">${icon(view === 'terms' ? 'bookmark' : 'note')}<p>${query ? '没有找到匹配的记录。' : view === 'terms' ? '术语本还空着。<br>在解读中点击“加入术语本”，保存值得记住的概念。' : '还没有阅读记录。<br>打开文档，选中内容，开始提问。'}</p></div>`;
 }
 
-function setSelection(value, range) {
+function setSelection(value, range, inline = false) {
+  closeTermPeek();
   const text = normalizeText(value.text);
   if (!text) return false;
   if (text.length > 8000) { toast('选区过长，请选择不超过 8000 字的一段内容。'); return false; }
@@ -560,7 +590,7 @@ function setSelection(value, range) {
   if (selectionRange && globalThis.Highlight && CSS.highlights) CSS.highlights.set('read-selection', new Highlight(selectionRange));
   $('#question-anchor').textContent = '针对选区：' + text;
   renderAssistant();
-  workspaceLayout?.revealAssistant();
+  if (!inline) workspaceLayout?.revealAssistant();
   rememberReader();
   return true;
 }
@@ -650,9 +680,9 @@ $('#document-content').addEventListener('click', async event => {
   }
   if (!part?.text) return;
   const range = rangeForOffsets(element, part.start, part.end);
-  if (!setSelection({ text: part.text, blockId: found.block.id, page: found.block.page }, range)) return;
-  showSelectionTools(range);
-  if (selectMode === 'word') await ask('explain');
+  if (!setSelection({ text: part.text, blockId: found.block.id, page: found.block.page }, range, selectMode === 'word')) return;
+  if (selectMode === 'word' && range) { termPeekRange = range.cloneRange(); await ask('explain', '', 'peek'); }
+  else showSelectionTools(range);
 });
 
 function modelReady() {
@@ -668,11 +698,11 @@ function updateModelStatus() {
   $('#model-status').title = (profiles.find(profile => profile.id === settings.profileId)?.name || label) + ' · ' + (settings.model || '点击设置');
 }
 
-async function ask(action, question = '') {
-  workspaceLayout?.revealAssistant();
+async function ask(action, question = '', surface = 'panel') {
+  if (surface !== 'peek') { closeTermPeek(); workspaceLayout?.revealAssistant(); }
   previewExpanded = false;
   if (!selection) { toast('请先点击词语或选中一段原文。'); return; }
-  if (settings.enabled && !modelReady()) { toast('请在设置中补充模型信息或密钥。'); showSettings(); return; }
+  if (settings.enabled && !modelReady()) { toast('请在设置中补充模型信息或密钥。'); showSettings('models'); return; }
   if (selection.image && selection.includeImage && (!modelReady() || !settings.vision)) { toast('图片提问需要连接支持图片输入的模型；也可仅使用选区文字。'); renderAssistant(); return; }
   stopRequest();
   const generation = requestGeneration;
@@ -683,8 +713,10 @@ async function ask(action, question = '') {
   setPressed('[data-panel]', b => b.dataset.panel === panel);
   $('#selection-tools').classList.add('hidden');
   $('#question-form button').disabled = true;
+  $('#question-form button').title = '正在解读，请稍候';
   $('#assistant-body').setAttribute('aria-busy', 'true');
   $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="loading-state"><p>${modelReady() ? '正在结合选区和相关原文思考…' : '正在查找内置术语与相关原文…'}</p><div class="loading-bars"><span></span><span></span><span></span></div><button data-action="cancel-request">取消</button></div>`;
+  renderTermPeek(true);
   const requestSelection = { ...selected }; delete requestSelection.image;
   const cacheKey = JSON.stringify([doc.id, requestSelection, action, question, contexts, settings.depth, settings.enabled, settings.endpoint, settings.model, settings.profileId, settings.vision, history]);
   try {
@@ -707,7 +739,7 @@ async function ask(action, question = '') {
     if (generation !== requestGeneration || active.id !== doc.id) { updateCounts(); return; }
     currentRecord = record;
     if (result.mode === 'model') history = [...history, { role: 'user', content: question || (action === 'logic' ? '拆解这段内容的逻辑' : '解释当前选区') }, { role: 'assistant', content: JSON.stringify(result) }].slice(-6);
-    updateCounts(); renderAssistant();
+    updateCounts(); renderAssistant(); renderTermPeek();
     $('#assistant-body').scrollTop = 0;
     $('#question').value = '';
     sizeQuestion();
@@ -716,6 +748,7 @@ async function ask(action, question = '') {
   } catch (error) {
     if (generation !== requestGeneration || error.name === 'AbortError') return;
     $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="error-state">${escape(error.message)}<br><button data-action="settings">检查模型设置</button></div>`;
+    renderTermPeek(false, error.message);
   } finally {
     if (generation === requestGeneration) { requestController = null; updateComposer(); $('#assistant-body').setAttribute('aria-busy', 'false'); }
   }
@@ -766,73 +799,94 @@ async function jumpToSource(id) {
 }
 
 function renderProfiles() {
-  $('#model-profiles').innerHTML = profiles.length ? profiles.map(profile => `<article class="model-profile ${profile.id === settings.profileId ? 'current' : ''}"><div><strong>${escape(profile.name)}</strong>${profile.id === settings.profileId ? '<span class="profile-badge">当前使用</span>' : ''}<p>${escape(profile.model)}${profile.vision ? ' · 支持图片' : ' · 文字模型'}</p><small>${escape(profile.endpoint)}</small></div><div class="profile-actions"><button type="button" data-use-profile="${profile.id}">使用</button><button type="button" data-edit-profile="${profile.id}">编辑</button><button type="button" data-remove-profile="${profile.id}" aria-label="移除 ${escape(profile.name)}">移除</button></div></article>`).join('') : '<p class="vault-empty">还没有保存的模型。填写下方配置，保存后即可重复使用。</p>';
+  $('#model-profiles').innerHTML = profiles.length ? profiles.map(profile => `<article class="model-profile ${profile.id === settings.profileId ? 'current' : ''}"><div><strong>${escape(profile.name)}</strong>${profile.id === settings.profileId ? '<span class="profile-badge">当前使用</span>' : ''}<p>${escape(profile.model)} · ${profile.vision ? '支持图片' : '文字模型'}</p><small>${escape(profile.endpoint)}</small><small class="profile-key-status">${profile.hasKey ? '密钥已保存' : '未保存密钥'}</small></div><div class="profile-actions"><button type="button" data-use-profile="${profile.id}" ${profile.id === settings.profileId && settings.enabled ? 'disabled' : ''}>${profile.id === settings.profileId && settings.enabled ? '已启用' : '使用'}</button><button type="button" data-edit-profile="${profile.id}">编辑</button><button type="button" data-remove-profile="${profile.id}" aria-label="移除 ${escape(profile.name)}">移除</button></div></article>`).join('') : '<div class="vault-empty"><h3>选择你的解读模型</h3><p>添加接口与密钥，就能随时向原文提问。</p><button type="button" class="button secondary" data-action="new-profile">新增模型</button></div>';
   $('#vault-error').textContent = vaultError;
   $('#vault-error').classList.toggle('hidden', !vaultError);
-  $('#vault-protection').textContent = vaultState.protection === 'windows-dpapi' ? 'API Key 在本机使用 Windows 账户加密保存。退出或重启后仍可使用。' : 'API Key 在本机加密保存。退出或重启后仍可使用。';
+  $('#active-model-label').textContent = profiles.find(profile => profile.id === settings.profileId)?.name || (settings.model ? settings.model + ' · 本次会话' : '尚未选择模型，请先在模型库添加。');
+  $('#vault-protection').textContent = vaultState.protection === 'windows-dpapi' ? 'API Key 使用本机 Windows 账户加密保存，重启后仍可使用。' : 'API Key 加密保存在本机，重启后仍可使用。';
+}
+
+function setSettingsPane(next, focus = false) {
+  settingsPane = next;
+  $('#settings-dialog').dataset.pane = next;
+  $('#reading-settings').classList.toggle('hidden', next !== 'reading');
+  $('#model-settings').classList.toggle('hidden', next !== 'models');
+  $('#model-editor').classList.toggle('hidden', next !== 'editor');
+  $('.settings-navigation').classList.toggle('hidden', next === 'editor');
+  setPressed('.settings-navigation [data-settings-pane]', b => b.dataset.settingsPane === next);
+  $('#key-help').classList.toggle('hidden', next === 'reading');
+  $('#settings-error').classList.add('hidden');
+  $('#settings-form button[type="submit"]').textContent = next === 'editor' ? '保存并使用' : next === 'models' ? '完成' : '保存设置';
+  $('#settings-save-note').textContent = next === 'editor' ? '密钥留空可保留已保存密钥' : next === 'models' ? '切换模型后即时生效' : '阅读偏好在保存后生效';
+  // A hidden URL field must not validate an abandoned editor draft.
+  $('#model-editor').querySelectorAll('input').forEach(input => input.disabled = next !== 'editor');
+  $('.settings-body').scrollTop = 0;
+  if (focus) (next === 'editor' ? $('#profile-name') : $('[data-action="new-profile"]')).focus({ preventScroll: true });
 }
 
 function fillModelDraft(profile = null) {
   editingProfileId = profile?.id || '';
   $('#profile-name').value = profile?.name || '';
-  $('#endpoint').value = profile?.endpoint || settings.endpoint;
-  $('#model').value = profile?.model || settings.model;
-  $('#model-vision').checked = profile?.vision ?? settings.vision;
-  $('#api-key').value = profile ? '' : apiKey;
+  $('#endpoint').value = profile?.endpoint || '';
+  $('#model').value = profile?.model || '';
+  $('#model-vision').checked = profile?.vision ?? false;
+  $('#api-key').value = '';
   $('#api-key').placeholder = profile?.hasKey ? '已保存；留空保留原密钥' : '输入对应模型服务的 API Key';
   $('#save-profile').checked = true;
-  $('#settings-error').classList.add('hidden');
+  $('#model-editor-title').textContent = profile ? '编辑模型' : '新增模型';
+  setSettingsPane('editor', true);
 }
 
-function showSettings() {
+function showSettings(pane = 'reading') {
+  closeTermPeek();
   $('#resume-on-launch').checked = settings.resumeOnLaunch;
   $('#depth').value = settings.depth;
   $('#use-model').checked = settings.enabled;
+  $('#api-key').value = '';
   renderProfiles();
-  fillModelDraft(profiles.find(profile => profile.id === settings.profileId));
+  setSettingsPane(pane);
   $('#settings-dialog').showModal();
 }
+$('#settings-dialog').addEventListener('close', () => { $('#api-key').value = ''; });
 
 $('#settings-form').addEventListener('submit', async event => {
   event.preventDefault();
   const submit = $('#settings-form button[type="submit"]');
   if (submit.disabled) return;
   submit.disabled = true;
-  const enabled = $('#use-model').checked;
-  let endpoint = $('#endpoint').value.trim();
-  let model = $('#model').value.trim();
-  const enteredModel = model;
-  const key = $('#api-key').value.trim();
-  const vision = $('#model-vision').checked;
-  const save = $('#save-profile').checked && !!(endpoint || model || key);
   try {
-    if (enabled || save) {
-      endpoint = normalizeEndpoint(endpoint);
-      model = normalizeModelName(model, endpoint);
-      const url = new URL(endpoint);
-      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-      if (!model) throw new Error('请填写模型名称。');
-      if (!local && !key && !(save && profiles.find(profile => profile.id === editingProfileId)?.hasKey)) throw new Error('请填写 API Key。');
+    if (settingsPane !== 'editor') {
+      const enabled = $('#use-model').checked;
+      if (enabled && (!settings.endpoint || !settings.model || (!apiKey && !profiles.find(profile => profile.id === settings.profileId)?.hasKey && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(settings.endpoint).hostname)))) {
+        setSettingsPane('models');
+        throw new Error('请先添加或选择一个模型，再启用模型解读。');
+      }
+      if (enabled !== settings.enabled) { stopRequest(); answerCache.clear(); }
+      settings = { ...settings, enabled, depth: $('#depth').value, resumeOnLaunch: $('#resume-on-launch').checked };
+      persistPreferences(); updateModelStatus(); renderAssistant();
+      $('#settings-dialog').close(); toast('设置已保存。');
+      return;
     }
+    let endpoint = normalizeEndpoint($('#endpoint').value.trim());
+    const enteredModel = $('#model').value.trim();
+    const model = normalizeModelName(enteredModel, endpoint);
+    const key = $('#api-key').value.trim(), vision = $('#model-vision').checked;
+    const save = $('#save-profile').checked;
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(endpoint).hostname);
+    if (!model) throw new Error('请填写模型 ID。');
+    if (!local && !key && !(save && profiles.find(profile => profile.id === editingProfileId)?.hasKey)) throw new Error('请填写 API Key。');
     stopRequest();
     if (save) {
       await vaultRequest('/api/vault', { method: 'POST', body: JSON.stringify({ id: editingProfileId || undefined, name: $('#profile-name').value.trim() || model, endpoint, model, apiKey: key, vision }) });
-      applyProfile(profiles.find(profile => profile.id === vaultState.activeId), enabled);
-    } else {
-      apiKey = key;
-      settings = { ...settings, enabled, endpoint, model, profileId: '', vision };
-    }
-    settings.depth = $('#depth').value;
-    settings.resumeOnLaunch = $('#resume-on-launch').checked;
+      applyProfile(profiles.find(profile => profile.id === vaultState.activeId));
+    } else { apiKey = key; settings = { ...settings, enabled: true, endpoint, model, profileId: '', vision }; }
     persistPreferences(); updateModelStatus(); answerCache.clear();
-    $('#api-key').value = '';
-    $('#settings-dialog').close(); toast(model !== enteredModel ? `设置已保存。模型名称已转换为 ${model}。` : '设置已保存。'); renderAssistant();
+    $('#api-key').value = ''; $('#use-model').checked = true;
+    renderProfiles(); setSettingsPane('models'); renderAssistant();
+    toast(model !== enteredModel ? `已保存并使用。模型 ID 已转换为 ${model}。` : save ? '模型已保存并启用。' : '已启用，仅用于本次会话。');
   } catch (error) {
-    const errorMessage = $('#settings-error');
-    errorMessage.textContent = error.message;
-    errorMessage.classList.remove('hidden');
-    errorMessage.focus();
-    errorMessage.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    const message = $('#settings-error'); message.textContent = error.message;
+    message.classList.remove('hidden'); message.focus(); message.scrollIntoView({ block: 'nearest', behavior: 'auto' });
   } finally { submit.disabled = false; }
 });
 
@@ -947,6 +1001,7 @@ function updateProgress() {
 }
 let scrollTimer;
 $('#reading-scroll').addEventListener('scroll', () => {
+  closeTermPeek();
   if (view !== 'reader' || restoringPosition) return;
   updateProgress(); $('#selection-tools').classList.add('hidden'); clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => rememberReader(), 350);
@@ -975,9 +1030,21 @@ async function changePdfMode(mode) {
   revealSurface($('#document-content'));
 }
 
+document.addEventListener('pointerdown', event => {
+  if (termPeekRange && !event.target.closest('#term-peek, #document-content')) closeTermPeek();
+}, { passive: true });
+document.addEventListener('toggle', event => {
+  if (!event.target.matches('.document-menu') || event.newState !== 'open') return;
+  const menu = event.target, trigger = $$('[popovertarget]').find(button => button.getAttribute('popovertarget') === menu.id);
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(innerWidth - menu.offsetWidth - 8, rect.right - menu.offsetWidth)) + 'px';
+  menu.style.top = (rect.bottom + menu.offsetHeight + 8 > innerHeight ? rect.top - menu.offsetHeight - 6 : rect.bottom + 6) + 'px';
+}, true);
 document.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button) return;
+  if (button.closest('.document-menu')) button.closest('.document-menu').hidePopover();
   try {
     if (button.dataset.close) { if (importing && button.dataset.close === 'import-dialog') return toast('正在解析文档，请稍候。'); $('#' + button.dataset.close).close(); return; }
     if (button.dataset.libraryFilter) { navigateView('library'); libraryState.filter = button.dataset.libraryFilter; libraryState.scrollTop = 0; $('#library-view').scrollTop = 0; renderLibrary(); persistLibrary(); return; }
@@ -987,11 +1054,11 @@ document.addEventListener('click', async event => {
     if (button.dataset.selectMode) { selectMode = button.dataset.selectMode; setPressed('[data-select-mode]', b => b === button); return; }
     if (button.dataset.pdfMode) { await changePdfMode(button.dataset.pdfMode); return; }
     if (button.dataset.slideMode) { slideMode = button.dataset.slideMode; slideReader.setMode(slideMode); setPressed('[data-slide-mode]', b => b === button); $('#slide-hint').textContent = slideMode === 'region' ? '拖动框选图片或文字，再向右侧提问' : '点击幻灯片上的文字区域，再向右侧提问'; return; }
-    if (button.dataset.editProfile) { fillModelDraft(profiles.find(profile => profile.id === button.dataset.editProfile)); $('#profile-name').focus(); return; }
+    if (button.dataset.settingsPane) { setSettingsPane(button.dataset.settingsPane); return; }
+    if (button.dataset.editProfile) { fillModelDraft(profiles.find(profile => profile.id === button.dataset.editProfile)); return; }
     if (button.dataset.useProfile) {
       const submit = $('#settings-form button[type="submit"]');
       button.disabled = true; submit.disabled = true;
-      fillModelDraft(profiles.find(profile => profile.id === button.dataset.useProfile));
       try {
         await vaultRequest('/api/vault/activate', { method: 'POST', body: JSON.stringify({ id: button.dataset.useProfile }) });
         stopRequest(); applyProfile(profiles.find(profile => profile.id === vaultState.activeId)); persistPreferences(); answerCache.clear(); updateModelStatus(); renderProfiles(); $('#use-model').checked = true; renderAssistant(); toast('已切换模型。');
@@ -1003,7 +1070,7 @@ document.addEventListener('click', async event => {
       if (await confirmRemoval('移除这个模型配置？', `“${profile.name}”及其 API Key 将从本机模型库移除。`)) {
         await vaultRequest('/api/vault', { method: 'DELETE', body: JSON.stringify({ id: profile.id }) });
         if (settings.profileId === profile.id) { stopRequest(); apiKey = ''; settings = { ...settings, profileId: '', enabled: false, endpoint: '', model: '', vision: false }; persistPreferences(); answerCache.clear(); updateModelStatus(); renderAssistant(); }
-        renderProfiles(); fillModelDraft(profiles.find(profile => profile.id === settings.profileId)); $('#use-model').checked = settings.enabled;
+        renderProfiles(); $('#use-model').checked = settings.enabled;
       } return;
     }
     if (button.dataset.importTab) {
@@ -1045,16 +1112,19 @@ document.addEventListener('click', async event => {
     }
     const action = button.dataset.action;
     if (action === 'import') { $('#import-progress').classList.add('hidden'); $('#import-dialog').showModal(); }
-    else if (action === 'settings') showSettings();
+    else if (action === 'settings') showSettings(button.closest('.assistant-panel') ? 'models' : 'reading');
     else if (action === 'new-category') { $('#category-form').reset(); $('#category-error').classList.add('hidden'); $('#category-dialog').showModal(); }
-    else if (action === 'new-profile') { fillModelDraft(); editingProfileId = ''; ['#profile-name', '#endpoint', '#model', '#api-key'].forEach(selector => $(selector).value = ''); $('#model-vision').checked = false; $('#use-model').checked = true; $('#profile-name').focus(); }
+    else if (action === 'new-profile') fillModelDraft();
+    else if (action === 'profile-back') { $('#api-key').value = ''; setSettingsPane('models', true); }
+    else if (action === 'close-peek') closeTermPeek();
+    else if (action === 'peek-detail') { const failed = $('#term-peek').dataset.error === 'true'; closeTermPeek(); if (failed) showSettings('models'); else { workspaceLayout?.revealAssistant(); if (!requestController) renderAssistant(); } }
     else if (action === 'text-only' && selection?.hasText) { setSelection({ ...selection, includeImage: false }); renderAssistant(); toast('接下来的提问只发送选区文字。'); }
     else if (action === 'slide-previous' || action === 'slide-next') slideReader.jump(slideReader.current + (action === 'slide-next' ? 1 : -1), scrollBehavior());
     else if (action === 'explain' || action === 'logic') await ask(action);
-    else if (action === 'ask-focus') { workspaceLayout?.revealAssistant(); $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
+    else if (action === 'ask-focus') { closeTermPeek(); workspaceLayout?.revealAssistant(); $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
     else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
     else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
-    else if (action === 'cancel-request') { stopRequest(); renderAssistant(); }
+    else if (action === 'cancel-request') { closeTermPeek(); stopRequest(); renderAssistant(); }
     else if (action === 'star-current' && currentRecord) {
       currentRecord.starred = !currentRecord.starred; await storage('records', 'put', currentRecord);
       updateCounts(); renderAssistant(); toast(currentRecord.starred ? '已加入术语本。' : '已从术语本移除。');
@@ -1084,13 +1154,16 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('keydown', event => {
   if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  if (view !== 'reader' || document.querySelector('.document-menu:popover-open')) return;
+  if (termPeekRange) { event.preventDefault(); closeTermPeek(); return; }
   if (slideReader.cancelInteraction()) { event.preventDefault(); return; }
   if (selection) { event.preventDefault(); stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
 });
 $('#assistant-body').addEventListener('toggle', event => { if (event.target.matches('.selection-preview')) previewExpanded = event.target.open; }, true);
+window.addEventListener('scroll', closeTermPeek, { passive: true });
 let resizeTimer;
 window.addEventListener('resize', () => {
-  syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer);
+  closeTermPeek(); syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer);
   if (view !== 'reader') return;
   const documentId = active?.id, position = readingPositionSnapshot();
   resizeTimer = setTimeout(async () => {
