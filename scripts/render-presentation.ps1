@@ -33,7 +33,7 @@ function Add-Text($range, $blocks, $words) {
     $text = ([string]$range.Text).Replace([char]13, [char]10).Replace([char]11, [char]10).Trim()
     if (-not $text) { return }
     $script:textTotal += $text.Length
-    if ($script:textTotal -gt 300000) { throw 'Presentation text exceeds 300,000 characters.' }
+    if ($script:textTotal -gt 300000) { throw 'PRESENTATION_TEXT_LIMIT:300000' }
     $blockIndex = $blocks.Count
     $blocks.Add([ordered]@{ text = $text; x = [double]$range.BoundLeft; y = [double]$range.BoundTop; w = [double]$range.BoundWidth; h = [double]$range.BoundHeight })
     # WPS 12 implements Characters(), but Words() raises NotImplementedException.
@@ -85,7 +85,7 @@ try {
     try { $oldAlerts = $application.DisplayAlerts; $hasAlerts=$true; $application.DisplayAlerts = 1 } catch { $hasAlerts=$false }
     # Read-only, no presentation window. Input is checked before this helper opens it.
     $presentation = $application.Presentations.Open($InputFile, -1, 0, 0)
-    if ($presentation.Slides.Count -gt 150) { throw 'A maximum of 150 slides is supported.' }
+    if ($presentation.Slides.Count -gt 300) { throw ('PRESENTATION_SLIDE_LIMIT:300:' + $presentation.Slides.Count) }
     $width = [double]$presentation.PageSetup.SlideWidth
     $height = [double]$presentation.PageSetup.SlideHeight
     if ($width -le 0 -or $height -le 0) { throw 'Invalid slide dimensions.' }

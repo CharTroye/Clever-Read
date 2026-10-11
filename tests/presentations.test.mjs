@@ -4,7 +4,7 @@ import { readFile, mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { checkPresentationInput } from '../presentation-input.mjs';
-import { importPresentation, presentationCapabilities } from '../presentations.mjs';
+import { importPresentation, presentationCapabilities, presentationErrorMessage } from '../presentations.mjs';
 import { textInRegion } from '../public/regions.mjs';
 
 function zip(entries) {
@@ -46,6 +46,12 @@ test('damaged ZIP metadata fails without opening an installed presentation app',
   assert.throws(() => checkPresentationInput(zip([['word/document.xml', '<doc/>']]), 'pptx'));
   const broken = zip([['ppt/presentation.xml', 'x']]); broken.writeUInt32LE(0xfffffff0, broken.length - 6);
   assert.throws(() => checkPresentationInput(broken, 'pptx'));
+});
+
+test('presentation limits remain specific even when wrapped as renderer failures', () => {
+  assert.equal(presentationErrorMessage('PRESENTATION_RENDER_FAILED: WPS: PRESENTATION_SLIDE_LIMIT:300:301'), '这份 PPT 有 301 张幻灯片，超过 300 张上限，请拆分后导入。');
+  assert.match(presentationErrorMessage('PRESENTATION_RENDER_FAILED: WPS: PRESENTATION_TEXT_LIMIT:300000'), /文字超过 30 万/);
+  assert.equal(presentationErrorMessage('幻灯片图片过多，请拆分 PPT 后导入。'), '幻灯片图片过多，请拆分 PPT 后导入。');
 });
 
 for (const extension of ['pptx', 'ppt']) test(`WPS-only import preserves images and word selection for ${extension}`, { skip: process.env.CLEVER_WPS_TEST !== '1' }, async t => {

@@ -14,6 +14,15 @@ export async function presentationCapabilities() {
 }
 export async function presentationCapability() { return (await presentationCapabilities()).available; }
 
+export function presentationErrorMessage(message) {
+  const limit = message.match(/PRESENTATION_SLIDE_LIMIT:(\d+):(\d+)/);
+  if (limit) return `这份 PPT 有 ${limit[2]} 张幻灯片，超过 ${limit[1]} 张上限，请拆分后导入。`;
+  if (/PRESENTATION_TEXT_LIMIT/.test(message)) return 'PPT 文字超过 30 万字符，请拆分后导入。';
+  if (/NO_PRESENTATION_ENGINE/.test(message)) return '未能启动 WPS 演示或 PowerPoint。请确认已安装 Windows 桌面版 WPS（含演示组件）；可先手动打开 WPS 演示后重试，仍失败时修复 WPS 安装。';
+  if (/PRESENTATION_RENDER_FAILED|spawn|ENOENT/.test(message)) return '本机 WPS / PowerPoint 读取或渲染失败。请先确认文件可在 WPS 中正常打开，再重试导入。';
+  return message;
+}
+
 export async function importPresentation(bytes, extension, directory = path.join(project, '.runtime', 'presentation-imports'), { renderer = 'auto' } = {}) {
   if (!['ppt', 'pptx'].includes(extension)) throw new Error('请导入 .ppt 或 .pptx 文件。');
   if (process.platform !== 'win32') throw new Error('保留 PPT 排版需要 Windows 桌面版 WPS 演示或 Microsoft PowerPoint。');
@@ -32,9 +41,9 @@ export async function importPresentation(bytes, extension, directory = path.join
     temporary = await mkdtemp(path.join(path.resolve(directory), 'deck-'));
     input = path.join(temporary, 'source.' + extension);
     await writeFile(input, bytes);
-    await runPowerShell(script, ['-InputFile', input, '-OutputDirectory', temporary, '-Renderer', renderer], '', 180000);
+    await runPowerShell(script, ['-InputFile', input, '-OutputDirectory', temporary, '-Renderer', renderer], '', 600000);
     const manifest = JSON.parse(await readFile(path.join(temporary, 'manifest.json'), 'utf8'));
-    if (!Array.isArray(manifest.slides) || !manifest.slides.length || manifest.slides.length > 150) throw new Error('没有可阅读的幻灯片。');
+    if (!Array.isArray(manifest.slides) || !manifest.slides.length || manifest.slides.length > 300) throw new Error('没有可阅读的幻灯片。');
     const slides = [];
     const blocks = [];
     let imageBytes = 0;
@@ -51,9 +60,7 @@ export async function importPresentation(bytes, extension, directory = path.join
     return { slides, blocks, pages: slides.length, slideWidth: manifest.width, slideHeight: manifest.height, renderer: manifest.renderer, rendererId: manifest.rendererId };
   } catch (error) {
     if (input) await runPowerShell(script, ['-InputFile', input, '-CleanupOnly'], '', 10000).catch(() => {});
-    if (/NO_PRESENTATION_ENGINE/.test(error.message)) throw new Error('未能启动 WPS 演示或 PowerPoint。请确认已安装 Windows 桌面版 WPS（含演示组件）；可先手动打开 WPS 演示后重试，仍失败时修复 WPS 安装。');
-    if (/PRESENTATION_RENDER_FAILED|spawn|ENOENT/.test(error.message)) throw new Error('本机 WPS / PowerPoint 无法读取此文件。请先在 WPS 中确认文件可打开、没有密码且未损坏，再另存为 .pptx 后重试。');
-    throw error;
+    throw new Error(presentationErrorMessage(error.message));
   } finally {
     if (temporary) {
       const base = path.resolve(directory) + path.sep;
