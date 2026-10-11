@@ -477,3 +477,48 @@ body[data-input="keyboard"] button:active { transform: none; }
   .library-heading { margin-top: 20px; }
   .local-note { display: none; }
 }
+
+.slide-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; border-bottom: 1px solid #e5e7ed; color: #6c7280; font-size: 11px; background: #f8f9fc; }
+.slide-navigation > div { display: flex; align-items: center; gap: 4px; flex: none; }
+.slide-navigation select { width: 86px; margin: 0; padding: 5px 8px; font-size: 11px; }
+.ppt-slides { width: max-content; min-width: 100%; margin: 0 auto; }
+.ppt-slide { width: max-content; margin: 0 auto 28px; scroll-margin-top: 12px; }
+.ppt-slide > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: #737985; font-size: 11px; }
+.ppt-slide > header button, .profile-actions button { border: 0; border-radius: 5px; background: transparent; padding: 5px 7px; color: #3869b4; font-size: 11px; }
+.slide-canvas { position: relative; overflow: hidden; background: #fff; border-radius: 5px; box-shadow: 0 1px 3px #20294312, 0 5px 20px #20294309; user-select: none; }
+.slide-image { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.slide-canvas.region-mode { cursor: crosshair; touch-action: none; }
+.ppt-text { position: absolute; display: block; background: transparent; border: 1px solid transparent; padding: 0; border-radius: 2px; }
+.region-mode .ppt-text { pointer-events: none; }
+.text-mode .ppt-text { cursor: text; }
+.text-mode .ppt-text:hover, .text-mode .ppt-text:focus-visible { background: #007aff12; border-color: #007aff80; }
+.ppt-region { position: absolute; pointer-events: none; border: 2px solid #007aff; background: #007aff14; box-shadow: 0 0 0 1px #ffffffa6; border-radius: 2px; }
+.region-preview { display: block; max-width: 100%; max-height: 200px; object-fit: contain; margin: 9px auto; border: 1px solid #e1e5ec; border-radius: 5px; background: #fff; }
+.region-caption { color: #727985; font-size: 10px; }
+.vision-notice { padding: 12px; margin: 12px 0; border-radius: 9px; background: #f5f7fb; border: 1px solid #e2e6ee; font-size: 12px; color: #535e70; }
+.vision-notice p { margin: 0 0 9px; }
+.vision-notice button { margin: 8px 5px 0 0; padding: 5px 8px; border: 1px solid #d9e2f1; background: #fff; color: #3869b4; border-radius: 5px; font-size: 11px; }
+.model-library-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.model-library-heading h3 { font-size: 13px; margin: 0; }
+.model-library { padding-bottom: 20px; margin-bottom: 18px; border-bottom: 1px solid #e7e9ee; }
+#model-profiles { display: grid; gap: 8px; }
+.model-profile { display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #e4e6ec; border-radius: 9px; padding: 12px; background: #fff; }
+.model-profile.current { border-color: #bdd2f3; background: #f7faff; }
+.model-profile > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.model-profile strong { font-size: 12px; }
+.model-profile p { font-size: 11px; margin: 5px 0; color: #606c80; }
+.model-profile small { display: block; font-size: 10px; color: #838a96; }
+.profile-badge { display: inline-block; font-size: 9px; color: #3370bb; padding: 2px 5px; margin-left: 8px; background: #e8f0fe; border-radius: 4px; }
+.profile-actions { display: flex; flex: none; gap: 2px; }
+.profile-actions button[data-remove-profile] { color: #8b6d71; }
+.vault-empty { color: #7c8492; font-size: 11px; line-height: 1.8; margin: 0; }
+.model-options { margin-top: 15px; }
+.model-options label { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 10px; }
+.model-options input { width: 15px; margin: 0; }
+@media (hover: hover) { .ppt-slide > header button:hover, .profile-actions button:hover { background: #e9eef8; } }
+@media (max-width: 480px) {
+  .slide-navigation { padding: 7px 12px; gap: 6px; }
+  .slide-navigation > span { max-width: 150px; line-height: 1.5; }
+  .model-profile { flex-wrap: wrap; }
+  .profile-actions { margin-left: auto; }
+}

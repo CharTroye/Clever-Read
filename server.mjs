@@ -3,6 +3,8 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateModelResult, normalizeEndpoint, normalizeModelName } from './public/core.mjs';
+import { ModelVault } from './vault.mjs';
+import { importPresentation, presentationCapability } from './presentations.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 const PORT = Number(process.env.PORT || 4173);
@@ -56,39 +58,61 @@ async function readProviderError(response) {
   try { return JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { return null; }
 }
 
-async function body(req) {
+async function bytes(req, limit = 3_000_000) {
   let size = 0;
   const parts = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 180_000) throw new Error('请求内容过长，请缩小选区。');
+    if (size > limit) throw new Error('请求内容过长，请缩小选区或文件。');
     parts.push(chunk);
   }
-  try { return JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { throw new Error('请求格式不正确。'); }
+  return Buffer.concat(parts);
 }
 
-async function answer(req, res) {
+async function body(req) {
+  try { return JSON.parse((await bytes(req)).toString('utf8')); } catch (error) { if (error.message.includes('过长')) throw error; throw new Error('请求格式不正确。'); }
+}
+
+function sameApp(req) {
   const origin = `http://${req.headers.host}`;
-  if (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site') return json(res, 403, { error: '请从本地阅读应用发起请求。' });
+  return req.headers['sec-fetch-site'] !== 'cross-site' && (req.headers.origin === origin || (req.method === 'GET' && !req.headers.origin && req.headers['sec-fetch-site'] === 'same-origin'));
+}
+
+export function validateImage(data) {
+  if (typeof data !== 'string' || data.length > 2_600_000 || !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error('图片格式不正确或图片过大，请重新框选。');
+  const buffer = Buffer.from(data.slice(data.indexOf(',') + 1), 'base64');
+  const png = data.startsWith('data:image/png') && buffer.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'));
+  const jpeg = data.startsWith('data:image/jpeg') && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (!png && !jpeg) throw new Error('图片内容与格式不符。');
+  return data;
+}
+
+async function answer(req, res, vault) {
+  if (!sameApp(req)) return json(res, 403, { error: '请从本地阅读应用发起请求。' });
   const input = await body(req);
-  const endpoint = validateEndpoint(input.endpoint);
-  const model = normalizeModelName(input.model, endpoint);
+  const profile = input.profileId ? await vault.credentials(String(input.profileId)) : input;
+  const endpoint = validateEndpoint(profile.endpoint);
+  const model = normalizeModelName(profile.model, endpoint);
   if (!model || model.length > 160) throw new Error('请填写模型名称。');
   const selected = String(input.selected?.text || '').slice(0, 8000);
-  if (!selected.trim()) throw new Error('请先选择需要解释的文本。');
+  if (!selected.trim()) throw new Error('请先选择需要解释的文本或幻灯片区域。');
+  const image = input.image ? validateImage(input.image) : null;
+  if (image && profile.vision !== true) throw new Error('当前模型配置未启用图片输入，请选择视觉模型或仅使用选区文字提问。');
   const contexts = (Array.isArray(input.contexts) ? input.contexts : []).slice(0, 8).map(c => ({ id: String(c.id).slice(0, 120), text: String(c.text).slice(0, 2400), page: c.page, section: String(c.section || '').slice(0, 160) }));
   const history = (Array.isArray(input.history) ? input.history : []).slice(-6).filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: String(m.content).slice(0, 4000) }));
-  const apiKey = String(input.apiKey || process.env.LLM_API_KEY || '').trim();
+  const apiKey = String(profile.apiKey || process.env.LLM_API_KEY || '').trim();
   if (apiKey.length > 2000 || /[\r\n]/.test(apiKey)) throw new Error('密钥格式不正确。');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 70_000);
   const onClose = () => { if (!res.writableEnded) controller.abort(); };
   res.on('close', onClose);
   try {
+    const text = JSON.stringify({ task: input.action, depth: input.depth, question: String(input.question || '').slice(0, 4000), documentTitle: String(input.documentTitle || '').slice(0, 200), selection: selected, sourceFragments: contexts, ...(image ? { imageContext: '附图是用户从这一页幻灯片框选的区域。请结合截图回答，无法辨认时明确说明；不要从占位文字猜测图像。', page: input.selected?.page } : {}) });
+    const userContent = image ? [{ type: 'text', text }, { type: 'image_url', image_url: { url: image, detail: 'high' } }] : text;
     const response = await fetch(endpoint, {
       method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: JSON.stringify({ task: input.action, depth: input.depth, question: String(input.question || '').slice(0, 4000), documentTitle: String(input.documentTitle || '').slice(0, 200), selection: selected, sourceFragments: contexts }) }] })
+      body: JSON.stringify({ model, stream: false, messages: [{ role: 'system', content: systemPrompt }, ...history, { role: 'user', content: userContent }] })
     });
     if (!response.ok) {
       throw new Error(formatProviderError(response.status, await readProviderError(response), apiKey));
@@ -103,7 +127,15 @@ async function answer(req, res) {
   } finally { clearTimeout(timeout); res.off('close', onClose); }
 }
 
-export function createServer() {
+export function createServer({ runtimeDirectory = path.join(path.dirname(root), '.runtime') } = {}) {
+  const vaults = new Map();
+  const vaultFor = req => {
+    const scope = req.headers['x-clever-test-session'] || '';
+    if (scope && !/^[a-z0-9-]{1,40}$/i.test(scope)) throw new Error('测试存储标识不正确。');
+    const directory = scope ? path.join(runtimeDirectory, 'qa', scope) : runtimeDirectory;
+    if (!vaults.has(directory)) vaults.set(directory, new ModelVault(directory));
+    return vaults.get(directory);
+  };
   return http.createServer(async (req, res) => {
     const host = req.headers.host || '';
     if (!/^(localhost|127\.0\.0\.1|\[::1\]):\d+$/.test(host)) return json(res, 403, { error: '仅支持本机访问。' });
@@ -112,15 +144,30 @@ export function createServer() {
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
     try {
       const url = new URL(req.url, `http://${host}`);
-      if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res);
-      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.1.1' });
+      if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res, vaultFor(req));
+      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.2.0' });
+      if (url.pathname === '/api/capabilities' && req.method === 'GET') return json(res, 200, { powerPoint: await presentationCapability(), keyVault: true });
+      if (url.pathname.startsWith('/api/vault')) {
+        if (!sameApp(req)) return json(res, 403, { error: '请从本地阅读应用管理密钥库。' });
+        const vault = vaultFor(req);
+        if (url.pathname === '/api/vault' && req.method === 'GET') return json(res, 200, await vault.list());
+        if (url.pathname === '/api/vault' && req.method === 'POST') return json(res, 200, await vault.save(await body(req)));
+        if (url.pathname === '/api/vault/activate' && req.method === 'POST') return json(res, 200, await vault.activate((await body(req)).id));
+        if (url.pathname === '/api/vault' && req.method === 'DELETE') return json(res, 200, await vault.remove((await body(req)).id));
+        return json(res, 405, { error: '不支持的密钥库操作。' });
+      }
+      if (url.pathname === '/api/presentations/import' && req.method === 'POST') {
+        if (!sameApp(req)) return json(res, 403, { error: '请从本地阅读应用导入 PPT。' });
+        const extension = String(url.searchParams.get('extension') || '').toLowerCase();
+        return json(res, 200, await importPresentation(await bytes(req, 30 * 1024 * 1024), extension, path.join(runtimeDirectory, 'presentation-imports')));
+      }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: '不支持的请求方式。' });
       const filename = path.resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));
       if (!filename.startsWith(root + path.sep)) return json(res, 403, { error: '不可访问。' });
       const info = await stat(filename);
       if (!info.isFile()) throw new Error('not-found');
       const file = await readFile(filename);
-      res.writeHead(200, { 'Content-Type': types[path.extname(filename)] || 'application/octet-stream', 'Content-Length': file.length, 'Cache-Control': path.extname(filename) === '.html' ? 'no-cache' : 'public, max-age=60' });
+      res.writeHead(200, { 'Content-Type': types[path.extname(filename)] || 'application/octet-stream', 'Content-Length': file.length, 'Cache-Control': ['.html', '.js', '.mjs', '.css'].includes(path.extname(filename)) ? 'no-cache' : 'public, max-age=60' });
       res.end(req.method === 'HEAD' ? undefined : file);
     } catch (error) {
       if (res.headersSent) return res.end();

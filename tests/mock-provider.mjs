@@ -9,9 +9,11 @@ http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: { message: 'Model Not Exist: test-invalid-model', code: 'invalid_request_error' } }));
       return;
     }
-    const input = JSON.parse(body.messages.at(-1).content);
-    const result = { title: '本地接口联调回执', summary: `测试收到问题：${input.question || input.task}。\n选区：${input.selection}。`, context: `收到 ${input.sourceFragments.length} 个原文片段及 ${body.messages.length - 2} 条对话历史。`, logic: [], limitations: '这是本机模拟接口，仅验证数据传递，不是实际模型推理。', sources: [input.sourceFragments.find(p => p.text.includes(input.selection))?.id || input.sourceFragments[0]?.id, 'invented-source'].filter(Boolean) };
+    const content = body.messages.at(-1).content;
+    const input = JSON.parse(Array.isArray(content) ? content.find(part => part.type === 'text').text : content);
+    const images = Array.isArray(content) ? content.filter(part => part.type === 'image_url').length : 0;
+    const result = { title: '本地接口联调回执', summary: `测试收到问题：${input.question || input.task}。\n选区：${input.selection}。`, context: `收到 ${images} 张选区图片、${input.sourceFragments.length} 个原文片段及 ${body.messages.length - 2} 条对话历史。模型 ID：${body.model}。`, logic: [], limitations: '这是本机模拟接口，仅验证数据传递，不是实际模型推理。', sources: [input.sourceFragments.find(p => p.text.includes(input.selection))?.id || input.sourceFragments[0]?.id, 'invented-source'].filter(Boolean) };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }));
   } catch { res.writeHead(400); res.end('{}'); }
-}).listen(4174, '127.0.0.1', () => console.log('Test-only model interface: http://127.0.0.1:4174/v1/chat/completions'));
+}).listen(Number(process.env.MOCK_PORT || 4174), '127.0.0.1', () => console.log('Test-only model interface is ready.'));

@@ -1,6 +1,7 @@
 import { normalizeText, selectionAt, retrieveContext, exportMarkdown, splitParagraphs, normalizeEndpoint, normalizeModelName } from './core.mjs';
 import { sampleDocument, glossary, localExplanation } from './sample.mjs';
 import { loadPdf, pdfLibrary, importPdf, importDocx } from './documents.mjs';
+import { SlideReader } from './slides.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => Array.from(document.querySelectorAll(selector));
@@ -123,18 +124,59 @@ let requestController = null;
 let requestGeneration = 0;
 let history = [];
 let apiKey = '';
+let profiles = [];
+let vaultState = { activeId: '', protection: '' };
+let vaultError = '';
+let editingProfileId = '';
+let slideMode = 'region';
+let slideZoom = 1;
 let importing = false;
 let toastTimer;
 const answerCache = new Map();
 const qaSession = new URLSearchParams(location.search).get('test-session')?.replace(/[^a-z0-9-]/gi, '').slice(0, 40);
 const storagePrefix = qaSession ? `clever-qa-${qaSession}` : 'clever';
-const defaults = { enabled: false, endpoint: '', model: '', depth: '入门', fontSize: 18, clickAssist: true };
+const defaults = { enabled: false, endpoint: '', model: '', profileId: '', vision: false, depth: '入门', fontSize: 18, clickAssist: true };
+let hadPreferences = false;
 let settings = { ...defaults };
 try {
-  settings = { ...defaults, ...JSON.parse(localStorage.getItem(storagePrefix + '-settings') || '{}') };
+  const saved = localStorage.getItem(storagePrefix + '-settings');
+  hadPreferences = !!saved;
+  settings = { ...defaults, ...JSON.parse(saved || '{}') };
   if (settings.endpoint) settings.endpoint = normalizeEndpoint(settings.endpoint);
   settings.model = normalizeModelName(settings.model, settings.endpoint);
 } catch { /* Use safe defaults for an interrupted settings write. */ }
+
+const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(qaSession ? { 'X-Clever-Test-Session': qaSession } : {}) });
+const isPresentation = () => ['ppt', 'pptx'].includes(active?.type) && Array.isArray(active?.slides);
+const slideReader = new SlideReader($('#document-content'), {
+  onSelect: (value, rect) => { const accepted = setSelection(value); if (accepted) showSelectionTools({ getClientRects: () => [rect], getBoundingClientRect: () => rect }); return accepted; },
+  onError: toast,
+  onPage: (page, total) => { $('#slide-number').value = String(page); $('[data-action="slide-previous"]').disabled = page <= 1; $('[data-action="slide-next"]').disabled = page >= total; }
+});
+
+async function vaultRequest(path = '/api/vault', options = {}) {
+  const response = await fetch(path, { ...options, headers: { ...apiHeaders(), ...options.headers } });
+  const value = await response.json();
+  if (!response.ok) throw new Error(value.error || '无法连接本机模型库，请重启 App 服务。');
+  profiles = value.profiles || [];
+  vaultState = { activeId: value.activeId || '', protection: value.protection || '' };
+  vaultError = '';
+  return value;
+}
+
+function applyProfile(profile, enabled = true) {
+  apiKey = '';
+  settings = { ...settings, profileId: profile.id, endpoint: profile.endpoint, model: profile.model, vision: profile.vision, enabled };
+}
+
+async function loadVault() {
+  try {
+    await vaultRequest();
+    const profile = profiles.find(profile => profile.id === vaultState.activeId);
+    if (profile) applyProfile(profile, hadPreferences ? settings.enabled : true);
+    else if (settings.profileId) settings = { ...settings, profileId: '', enabled: false };
+  } catch (error) { vaultError = '无法读取模型库，请确认已启动新版 App 服务。' + error.message; }
+}
 
 function toast(message) {
   clearTimeout(toastTimer);
@@ -293,6 +335,7 @@ function clearSelection() {
   selection = null; selectionRange = null; history = [];
   $('#selection-tools').classList.add('hidden');
   globalThis.CSS?.highlights?.delete('read-selection');
+  slideReader.clearSelection();
   $('#question-anchor').textContent = '先在原文中选择一个词或句子';
   updateComposer();
 }
@@ -302,16 +345,27 @@ async function openDocument(id, restorePosition = true) {
   clearTimeout(scrollTimer);
   stopRequest(); clearSelection(); currentRecord = null; panel = 'explain';
   await teardownPdf();
+  slideReader.destroy();
   active = documents.find(d => d.id === id) || documents[0];
   pdfMode = 'reflow'; pdfZoom = 1;
+  slideMode = 'region'; slideZoom = 1;
   view = 'reader';
   updateView(); renderLibrary(); renderAssistant();
-  renderText();
+  if (isPresentation()) {
+    $('#slide-number').innerHTML = active.slides.map(slide => `<option value="${slide.page}">${slide.page} / ${active.pages}</option>`).join('');
+    slideReader.render(active, slideMode, slideZoom);
+  } else renderText();
   $('#pdf-mode').classList.toggle('hidden', active.type !== 'pdf');
   setPressed('[data-pdf-mode]', b => b.dataset.pdfMode === pdfMode);
-  $('#font-value').textContent = fontSize;
+  $('#ppt-mode').classList.toggle('hidden', !isPresentation());
+  $('#slide-navigation').classList.toggle('hidden', !isPresentation());
+  $('[data-select-mode]').closest('.reading-mode').classList.toggle('hidden', isPresentation());
+  $('#click-assist').closest('label').classList.toggle('hidden', isPresentation());
+  setPressed('[data-slide-mode]', b => b.dataset.slideMode === slideMode);
+  $('#slide-hint').textContent = '拖动框选图片或文字，再向右侧助手提问';
+  $('#font-value').textContent = isPresentation() ? '100%' : fontSize;
   $('#breadcrumb-title').textContent = active.title;
-  $('#doc-meta').textContent = active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
+  $('#doc-meta').textContent = isPresentation() ? `${active.pages} 张幻灯片 · PowerPoint 原版` : active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
   try { localStorage.setItem(storagePrefix + '-active', active.id); } catch { /* Nonessential preference. */ }
   requestAnimationFrame(() => { $('#reading-scroll').scrollTop = restorePosition ? active.scrollTop || 0 : 0; updateProgress(); });
   if (previousDocument && previousDocument !== active.id) revealSurface($('#document-content'));
@@ -332,7 +386,8 @@ function updateView() {
 }
 
 function quoteHtml(selected) {
-  return selected ? `<div class="selected-quote"><div class="selected-label"><span>当前选区</span><span>${selected.page ? '第 ' + selected.page + ' 页' : '原文'}</span></div><div class="selected-text">${escape(selected.text)}</div></div>` : '';
+  const image = selected?.image && /^data:image\/(jpeg|png);base64,/.test(selected.image) ? `<img class="region-preview" src="${escape(selected.image)}" alt="框选区域截图"><div class="region-caption">${selected.includeImage ? '将发送这张区域截图和对应文字' : '仅发送文字，截图不发送'}</div>` : '';
+  return selected ? `<div class="selected-quote"><div class="selected-label"><span>${selected.sourceType === 'slide' ? '幻灯片选区' : '当前选区'}</span><span>${selected.page ? '第 ' + selected.page + (selected.sourceType === 'slide' ? ' 张' : ' 页') : '原文'}</span></div>${image}<div class="selected-text">${escape(selected.text)}</div></div>` : '';
 }
 
 function renderAssistant() {
@@ -347,7 +402,8 @@ function renderAssistant() {
   }
   if (currentRecord) { renderAnswer(currentRecord); return; }
   if (selection) {
-    target.innerHTML = quoteHtml(selection) + '<h2 class="answer-title">想理解这段内容？</h2><p class="answer-summary">查看术语解释，或者在下方写下你的问题。问题会附带当前选区和相关上下文。</p><div class="answer-actions"><button data-action="explain">' + icon('sparkles') + '解释选区</button><button data-action="logic">' + icon('layers') + '拆解逻辑</button></div>';
+    const visionNote = selection.image && selection.includeImage && !settings.vision ? `<div class="vision-notice">图片提问需要支持图片输入的模型。${selection.hasText ? '<button data-action="text-only">仅用选区文字提问</button>' : ''}<button data-action="settings">选择视觉模型</button></div>` : '';
+    target.innerHTML = quoteHtml(selection) + visionNote + '<h2 class="answer-title">针对选区提问</h2><p class="answer-summary">在下方输入问题，也可以直接解释选区或拆解逻辑。</p><div class="answer-actions"><button data-action="explain">' + icon('sparkles') + '解释选区</button><button data-action="logic">' + icon('layers') + '拆解逻辑</button></div>';
     return;
   }
   target.innerHTML = `<div class="assistant-welcome"><div class="welcome-hero"><div class="welcome-symbol">${icon('sparkles')}</div><h2>让理解，跟上阅读。</h2></div><p>点击一个术语，或选中一句话。<br>带着原文，解释、拆解与追问。</p><div class="suggestion-heading">${active?.type === 'sample' ? '从这篇示例开始' : modelReady() ? '模型已就绪，选中原文即可提问' : '连接模型后，可解读导入的文档'}</div>${active?.type === 'sample' ? `<button class="suggestion" data-demo="term" aria-label="解释 “self-attention”">${icon('sparkles')}<div><strong>理解一个概念</strong><small>“self-attention” 是什么意思？</small></div>${icon('arrow-right')}</button><button class="suggestion" data-demo="sentence" aria-label="针对一句话提问">${icon('layers')}<div><strong>读懂一句话</strong><small>定位疑问，再拆解逻辑</small></div>${icon('arrow-right')}</button>` : modelReady() ? '' : `<button class="suggestion" data-action="settings">${icon('settings')}<div><strong>设置问答模型</strong><small>连接你的模型，继续追问原文</small></div>${icon('arrow-right')}</button>`}</div>`;
@@ -374,7 +430,7 @@ function setSelection(value, range) {
   const text = normalizeText(value.text);
   if (!text) return false;
   if (text.length > 8000) { toast('选区过长，请选择不超过 8000 字的一段内容。'); return false; }
-  const changed = !selection || selection.text !== text || selection.blockId !== value.blockId;
+  const changed = !selection || selection.text !== text || selection.blockId !== value.blockId || JSON.stringify(selection.region) !== JSON.stringify(value.region) || selection.includeImage !== value.includeImage;
   if (changed) { stopRequest(); history = []; currentRecord = null; }
   selection = { ...value, text };
   selectionRange = range?.cloneRange() || null;
@@ -478,19 +534,20 @@ $('#document-content').addEventListener('click', async event => {
 function modelReady() {
   if (!settings.enabled) return false;
   if (!settings.endpoint || !settings.model) return false;
-  try { return !!apiKey || ['localhost', '127.0.0.1', '[::1]'].includes(new URL(settings.endpoint).hostname); } catch { return false; }
+  try { return !!apiKey || !!profiles.find(profile => profile.id === settings.profileId)?.hasKey || ['localhost', '127.0.0.1', '[::1]'].includes(new URL(settings.endpoint).hostname); } catch { return false; }
 }
 
 function updateModelStatus() {
   const label = !settings.enabled ? '本地辅助' : modelReady() ? '模型已配置' : '待补充模型设置';
   $('#model-status').innerHTML = icon('sparkles') + `<span class="status-label">${escape(label)}</span>`;
   $('#model-status').dataset.state = modelReady() ? 'ready' : 'local';
-  $('#model-status').title = label + ' · 点击设置';
+  $('#model-status').title = (profiles.find(profile => profile.id === settings.profileId)?.name || label) + ' · ' + (settings.model || '点击设置');
 }
 
 async function ask(action, question = '') {
   if (!selection) { toast('请先点击词语或选中一段原文。'); return; }
   if (settings.enabled && !modelReady()) { toast('请在设置中补充模型信息或密钥。'); showSettings(); return; }
+  if (selection.image && selection.includeImage && (!modelReady() || !settings.vision)) { toast('图片提问需要连接支持图片输入的模型；也可仅使用选区文字。'); renderAssistant(); return; }
   stopRequest();
   const generation = requestGeneration;
   const selected = structuredClone(selection);
@@ -502,13 +559,14 @@ async function ask(action, question = '') {
   $('#question-form button').disabled = true;
   $('#assistant-body').setAttribute('aria-busy', 'true');
   $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="loading-state"><p>${modelReady() ? '正在结合选区和相关原文思考…' : '正在查找内置术语与相关原文…'}</p><div class="loading-bars"><span></span><span></span><span></span></div><button data-action="cancel-request">取消</button></div>`;
-  const cacheKey = JSON.stringify([doc.id, selected, action, question, contexts, settings.depth, settings.enabled, settings.endpoint, settings.model, history]);
+  const requestSelection = { ...selected }; delete requestSelection.image;
+  const cacheKey = JSON.stringify([doc.id, requestSelection, action, question, contexts, settings.depth, settings.enabled, settings.endpoint, settings.model, settings.profileId, settings.vision, history]);
   try {
     let result = answerCache.get(cacheKey);
     if (!result) {
       if (modelReady()) {
         requestController = new AbortController();
-        const response = await fetch('/api/answer', { method: 'POST', signal: requestController.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: settings.endpoint, model: settings.model, apiKey, action, question, depth: settings.depth, selected, documentTitle: doc.title, contexts, history }) });
+        const response = await fetch('/api/answer', { method: 'POST', signal: requestController.signal, headers: apiHeaders(), body: JSON.stringify({ profileId: settings.profileId || undefined, endpoint: settings.endpoint, model: settings.model, apiKey, vision: settings.vision, image: selected.includeImage ? selected.image : undefined, action, question, depth: settings.depth, selected: requestSelection, documentTitle: doc.title, contexts, history }) });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '模型请求失败。');
         result = data.result;
@@ -550,6 +608,7 @@ async function showRecord(id) {
     toast('原文已移除，保留的解读和摘录仍可查看。');
   }
   renderAssistant();
+  if (isPresentation() && selection?.region) { slideReader.jump(selection.page, scrollBehavior()); slideReader.showSelection(selection); }
 }
 
 async function jumpToSource(id) {
@@ -558,6 +617,7 @@ async function jumpToSource(id) {
   if (!source) return;
   if (!documents.some(d => d.id === record.docId)) { toast('原文已移除，无法跳转。'); return; }
   if (active.id !== record.docId) { await openDocument(record.docId, false); selection = record.selected; currentRecord = record; renderAssistant(); }
+  if (isPresentation() && source.page) { slideReader.jump(source.page, scrollBehavior()); if (record.selected.page === source.page) slideReader.showSelection(record.selected); return; }
   if (pdfMode === 'original' && source.page) {
     const page = document.querySelector(`.pdf-page[data-page="${source.page}"]`);
     page.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
@@ -574,36 +634,65 @@ async function jumpToSource(id) {
   }
 }
 
+function renderProfiles() {
+  $('#model-profiles').innerHTML = profiles.length ? profiles.map(profile => `<article class="model-profile ${profile.id === settings.profileId ? 'current' : ''}"><div><strong>${escape(profile.name)}</strong>${profile.id === settings.profileId ? '<span class="profile-badge">当前使用</span>' : ''}<p>${escape(profile.model)}${profile.vision ? ' · 支持图片' : ' · 文字模型'}</p><small>${escape(profile.endpoint)}</small></div><div class="profile-actions"><button type="button" data-use-profile="${profile.id}">使用</button><button type="button" data-edit-profile="${profile.id}">编辑</button><button type="button" data-remove-profile="${profile.id}" aria-label="移除 ${escape(profile.name)}">移除</button></div></article>`).join('') : '<p class="vault-empty">还没有保存的模型。填写下方配置，保存后即可重复使用。</p>';
+  $('#vault-error').textContent = vaultError;
+  $('#vault-error').classList.toggle('hidden', !vaultError);
+  $('#vault-protection').textContent = vaultState.protection === 'windows-dpapi' ? 'API Key 在本机使用 Windows 账户加密保存。退出或重启后仍可使用。' : 'API Key 在本机加密保存。退出或重启后仍可使用。';
+}
+
+function fillModelDraft(profile = null) {
+  editingProfileId = profile?.id || '';
+  $('#profile-name').value = profile?.name || '';
+  $('#endpoint').value = profile?.endpoint || settings.endpoint;
+  $('#model').value = profile?.model || settings.model;
+  $('#model-vision').checked = profile?.vision ?? settings.vision;
+  $('#api-key').value = profile ? '' : apiKey;
+  $('#api-key').placeholder = profile?.hasKey ? '已保存；留空保留原密钥' : '输入对应模型服务的 API Key';
+  $('#save-profile').checked = true;
+  $('#settings-error').classList.add('hidden');
+}
+
 function showSettings() {
   $('#depth').value = settings.depth;
   $('#use-model').checked = settings.enabled;
-  $('#endpoint').value = settings.endpoint;
-  $('#model').value = settings.model;
-  $('#api-key').value = apiKey;
-  $('#settings-error').classList.add('hidden');
+  renderProfiles();
+  fillModelDraft(profiles.find(profile => profile.id === settings.profileId));
   $('#settings-dialog').showModal();
 }
 
-$('#settings-form').addEventListener('submit', event => {
+$('#settings-form').addEventListener('submit', async event => {
   event.preventDefault();
+  const submit = $('#settings-form button[type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;
   const enabled = $('#use-model').checked;
   let endpoint = $('#endpoint').value.trim();
   let model = $('#model').value.trim();
   const enteredModel = model;
   const key = $('#api-key').value.trim();
+  const vision = $('#model-vision').checked;
+  const save = $('#save-profile').checked && !!(endpoint || model || key);
   try {
-    if (enabled) {
+    if (enabled || save) {
       endpoint = normalizeEndpoint(endpoint);
       model = normalizeModelName(model, endpoint);
       const url = new URL(endpoint);
       const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
       if (!model) throw new Error('请填写模型名称。');
-      if (!local && !key) throw new Error('请填写 API 密钥；密钥仅在本次页面会话中保留。');
+      if (!local && !key && !(save && profiles.find(profile => profile.id === editingProfileId)?.hasKey)) throw new Error('请填写 API Key。');
     }
     stopRequest();
-    apiKey = key;
-    settings = { ...settings, enabled, endpoint, model, depth: $('#depth').value };
+    if (save) {
+      await vaultRequest('/api/vault', { method: 'POST', body: JSON.stringify({ id: editingProfileId || undefined, name: $('#profile-name').value.trim() || model, endpoint, model, apiKey: key, vision }) });
+      applyProfile(profiles.find(profile => profile.id === vaultState.activeId), enabled);
+    } else {
+      apiKey = key;
+      settings = { ...settings, enabled, endpoint, model, profileId: '', vision };
+    }
+    settings.depth = $('#depth').value;
     persistPreferences(); updateModelStatus(); answerCache.clear();
+    $('#api-key').value = '';
     $('#settings-dialog').close(); toast(model !== enteredModel ? `设置已保存。模型名称已转换为 ${model}。` : '设置已保存。'); renderAssistant();
   } catch (error) {
     const errorMessage = $('#settings-error');
@@ -611,7 +700,7 @@ $('#settings-form').addEventListener('submit', event => {
     errorMessage.classList.remove('hidden');
     errorMessage.focus();
     errorMessage.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-  }
+  } finally { submit.disabled = false; }
 });
 
 function importProgress(text) {
@@ -634,7 +723,7 @@ async function handleFile(file) {
     if (file.size > 30 * 1024 * 1024) throw new Error('文件超过 30 MB，请拆分或压缩后导入。');
     const extension = file.name.split('.').at(-1).toLowerCase();
     if (extension === 'doc') throw new Error('旧版 .doc 暂不支持，请在 Word 或 WPS 中另存为 .docx。');
-    if (!['pdf', 'docx', 'txt', 'md'].includes(extension)) throw new Error('请导入 PDF、Word (.docx)、TXT 或 Markdown。');
+    if (!['pdf', 'docx', 'ppt', 'pptx', 'txt', 'md'].includes(extension)) throw new Error('请导入 PDF、Word (.docx)、PowerPoint (.ppt / .pptx)、TXT 或 Markdown。');
     const checksum = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
     const duplicate = documents.find(d => d.checksum === checksum);
     if (duplicate) { $('#import-dialog').close(); await openDocument(duplicate.id); toast('这份文档已在文档库中。'); return; }
@@ -642,6 +731,13 @@ async function handleFile(file) {
     let parsed;
     if (extension === 'pdf') parsed = await importPdf(file, importProgress);
     else if (extension === 'docx') parsed = await importDocx(file, importProgress);
+    else if (['ppt', 'pptx'].includes(extension)) {
+      importProgress('正在通过本机 PowerPoint 读取幻灯片，请稍候…');
+      const response = await fetch('/api/presentations/import?extension=' + extension, { method: 'POST', headers: { ...apiHeaders(), 'Content-Type': 'application/octet-stream' }, body: file });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error || '无法读取 PowerPoint 文件。');
+      parsed = { ...value, blob: file };
+    }
     else {
       const text = await file.text();
       if (text.includes('\u0000')) throw new Error('文本文件的编码不支持，请另存为 UTF-8。');
@@ -649,7 +745,7 @@ async function handleFile(file) {
       parsed = { blocks: splitParagraphs(text), pages: null };
       if (!parsed.blocks.length) throw new Error('文件没有可阅读的内容。');
     }
-    await saveDocument({ id: crypto.randomUUID(), title: file.name.replace(/\.[^.]+$/, ''), type: extension, author: extension === 'docx' ? 'Word 正文 · 本地解析' : '本地文档', createdAt: Date.now(), checksum, ...parsed });
+    await saveDocument({ id: crypto.randomUUID(), title: file.name.replace(/\.[^.]+$/, ''), type: extension, author: extension === 'docx' ? 'Word 正文 · 本地解析' : ['ppt', 'pptx'].includes(extension) ? 'PowerPoint · 本机读取' : '本地文档', createdAt: Date.now(), checksum, ...parsed });
   } catch (error) { importProgress(error.message.includes('Invalid') ? '文档损坏或格式不支持，请检查文件。' : error.message); }
   finally { importing = false; $('#file-input').disabled = false; $('#file-input').value = ''; }
 }
@@ -678,10 +774,12 @@ $('#question').addEventListener('input', sizeQuestion);
 $('#record-search').addEventListener('input', renderCollection);
 $('#click-assist').addEventListener('change', () => { settings.clickAssist = $('#click-assist').checked; persistPreferences(); });
 $('#document-switch').addEventListener('change', event => openDocument(event.target.value).catch(error => toast(error.message)));
+$('#slide-number').addEventListener('change', event => slideReader.jump(event.target.value, scrollBehavior()));
 $('#import-dialog').addEventListener('cancel', event => { if (importing) { event.preventDefault(); toast('正在解析文档，请稍候。'); } });
 $('#selection-tools').addEventListener('pointerdown', event => event.preventDefault());
 
 function updateProgress() {
+  if (isPresentation()) slideReader.updatePage();
   const el = $('#reading-scroll');
   const max = el.scrollHeight - el.clientHeight;
   const progress = Math.max(0, Math.min(1, max <= 1 ? 1 : el.scrollTop / max));
@@ -730,6 +828,26 @@ document.addEventListener('click', async event => {
     if (button.dataset.panel) { const changed = panel !== button.dataset.panel; panel = button.dataset.panel; renderAssistant(); if (changed) revealSurface($('#assistant-body'), 3); return; }
     if (button.dataset.selectMode) { selectMode = button.dataset.selectMode; setPressed('[data-select-mode]', b => b === button); return; }
     if (button.dataset.pdfMode) { await changePdfMode(button.dataset.pdfMode); return; }
+    if (button.dataset.slideMode) { slideMode = button.dataset.slideMode; slideReader.setMode(slideMode); setPressed('[data-slide-mode]', b => b === button); $('#slide-hint').textContent = slideMode === 'region' ? '拖动框选图片或文字，再向右侧提问' : '点击幻灯片上的文字区域，再向右侧提问'; return; }
+    if (button.dataset.editProfile) { fillModelDraft(profiles.find(profile => profile.id === button.dataset.editProfile)); $('#profile-name').focus(); return; }
+    if (button.dataset.useProfile) {
+      const submit = $('#settings-form button[type="submit"]');
+      button.disabled = true; submit.disabled = true;
+      fillModelDraft(profiles.find(profile => profile.id === button.dataset.useProfile));
+      try {
+        await vaultRequest('/api/vault/activate', { method: 'POST', body: JSON.stringify({ id: button.dataset.useProfile }) });
+        stopRequest(); applyProfile(profiles.find(profile => profile.id === vaultState.activeId)); persistPreferences(); answerCache.clear(); updateModelStatus(); renderProfiles(); $('#use-model').checked = true; renderAssistant(); toast('已切换模型。');
+      } finally { button.disabled = false; submit.disabled = false; }
+      return;
+    }
+    if (button.dataset.removeProfile) {
+      const profile = profiles.find(profile => profile.id === button.dataset.removeProfile);
+      if (await confirmRemoval('移除这个模型配置？', `“${profile.name}”及其 API Key 将从本机模型库移除。`)) {
+        await vaultRequest('/api/vault', { method: 'DELETE', body: JSON.stringify({ id: profile.id }) });
+        if (settings.profileId === profile.id) { stopRequest(); apiKey = ''; settings = { ...settings, profileId: '', enabled: false, endpoint: '', model: '', vision: false }; persistPreferences(); answerCache.clear(); updateModelStatus(); renderAssistant(); }
+        renderProfiles(); fillModelDraft(profiles.find(profile => profile.id === settings.profileId)); $('#use-model').checked = settings.enabled;
+      } return;
+    }
     if (button.dataset.importTab) {
       if (importing) return toast('正在解析文档，请稍候。');
       const file = button.dataset.importTab === 'file';
@@ -768,6 +886,9 @@ document.addEventListener('click', async event => {
     const action = button.dataset.action;
     if (action === 'import') { $('#import-progress').classList.add('hidden'); $('#import-dialog').showModal(); }
     else if (action === 'settings') showSettings();
+    else if (action === 'new-profile') { fillModelDraft(); editingProfileId = ''; ['#profile-name', '#endpoint', '#model', '#api-key'].forEach(selector => $(selector).value = ''); $('#model-vision').checked = false; $('#use-model').checked = true; $('#profile-name').focus(); }
+    else if (action === 'text-only' && selection?.hasText) { setSelection({ ...selection, includeImage: false }); renderAssistant(); toast('接下来的提问只发送选区文字。'); }
+    else if (action === 'slide-previous' || action === 'slide-next') slideReader.jump(slideReader.current + (action === 'slide-next' ? 1 : -1), scrollBehavior());
     else if (action === 'explain' || action === 'logic') await ask(action);
     else if (action === 'ask-focus') { $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
     else if (action === 'dismiss-selection') $('#selection-tools').classList.add('hidden');
@@ -786,7 +907,10 @@ document.addEventListener('click', async event => {
     }
     else if (action === 'font-up' || action === 'font-down') {
       const direction = action === 'font-up' ? 1 : -1;
-      if (pdfMode === 'original') {
+      if (isPresentation()) {
+        const page = slideReader.current; slideZoom = Math.max(.6, Math.min(1.6, slideZoom + direction * .1));
+        $('#font-value').textContent = Math.round(slideZoom * 100) + '%'; slideReader.render(active, slideMode, slideZoom); slideReader.jump(page); if (selection?.region) slideReader.showSelection(selection);
+      } else if (pdfMode === 'original') {
         await teardownPdf(); pdfZoom = Math.max(.6, Math.min(1.6, pdfZoom + direction * .1));
         $('#font-value').textContent = Math.round(pdfZoom * 100) + '%'; await renderOriginalPdf();
       } else {
@@ -799,7 +923,7 @@ document.addEventListener('click', async event => {
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape') $('#selection-tools').classList.add('hidden'); });
 let resizeTimer;
-window.addEventListener('resize', () => { syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer); if (pdfMode === 'original') resizeTimer = setTimeout(async () => { try { await teardownPdf(); await renderOriginalPdf(); } catch { toast('PDF 页面重绘失败，请切换阅读模式重试。'); } }, 300); });
+window.addEventListener('resize', () => { syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer); if (isPresentation()) resizeTimer = setTimeout(() => { const page = slideReader.current; slideReader.render(active, slideMode, slideZoom); slideReader.jump(page); if (selection?.region) slideReader.showSelection(selection); }, 200); else if (pdfMode === 'original') resizeTimer = setTimeout(async () => { try { await teardownPdf(); await renderOriginalPdf(); } catch { toast('PDF 页面重绘失败，请切换阅读模式重试。'); } }, 300); });
 
 async function init() {
   hydrateIcons();
@@ -809,6 +933,7 @@ async function init() {
   fontSize = Math.max(15, Math.min(26, settings.fontSize || 18));
   document.documentElement.style.setProperty('--body-size', fontSize + 'px');
   $('#click-assist').checked = settings.clickAssist;
+  await loadVault();
   updateModelStatus();
   try {
     await openStorage();
