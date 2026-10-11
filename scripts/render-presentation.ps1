@@ -86,6 +86,7 @@ try {
     # Read-only, no presentation window. Input is checked before this helper opens it.
     $presentation = $application.Presentations.Open($InputFile, -1, 0, 0)
     if ($presentation.Slides.Count -gt 300) { throw ('PRESENTATION_SLIDE_LIMIT:300:' + $presentation.Slides.Count) }
+    [Console]::Out.WriteLine('CLEVER_PROGRESS:' + (@{ page=0; total=$presentation.Slides.Count; renderer=$selectedEngine.label } | ConvertTo-Json -Compress))
     $width = [double]$presentation.PageSetup.SlideWidth
     $height = [double]$presentation.PageSetup.SlideHeight
     if ($width -le 0 -or $height -le 0) { throw 'Invalid slide dimensions.' }
@@ -104,6 +105,7 @@ try {
         }
         $slides.Add([ordered]@{ page = $page; image = $filename; texts = $blocks.ToArray(); words = $words.ToArray() })
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($slide)
+        [Console]::Out.WriteLine('CLEVER_PROGRESS:' + (@{ page=$page; total=$presentation.Slides.Count; renderer=$selectedEngine.label } | ConvertTo-Json -Compress))
     }
     $manifest = [ordered]@{ width = $width; height = $height; slides = $slides.ToArray(); renderer = $selectedEngine.label; rendererId = $selectedEngine.id }
     [IO.File]::WriteAllText((Join-Path $OutputDirectory 'manifest.json'), ($manifest | ConvertTo-Json -Depth 12 -Compress), [Text.UTF8Encoding]::new($false))

@@ -2,6 +2,8 @@ import { normalizeText, selectionAt, retrieveContext, exportMarkdown, splitParag
 import { sampleDocument, glossary, localExplanation } from './sample.mjs';
 import { loadPdf, pdfLibrary, importPdf, importDocx } from './documents.mjs';
 import { SlideReader } from './slides.mjs';
+import { initWorkspaceLayout } from './layout.mjs';
+import { readPresentationStream } from './presentation-stream.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => Array.from(document.querySelectorAll(selector));
@@ -29,7 +31,10 @@ const paths = {
   link: '<path d="m9 15 6-6M8 17l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m0 10a4 4 0 0 0 6 0l5-5a4 4 0 0 0-6-6l-1 1"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
-  check: '<path d="m5 12 4 4L19 6"/>'
+  check: '<path d="m5 12 4 4L19 6"/>',
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  focus: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>'
 };
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 function hydrateIcons(root = document) { root.querySelectorAll('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon)); }
@@ -131,7 +136,10 @@ let editingProfileId = '';
 let slideMode = 'region';
 let slideZoom = 1;
 let importing = false;
+let importController = null;
 let toastTimer;
+let previewExpanded = false;
+let workspaceLayout;
 const answerCache = new Map();
 const qaSession = new URLSearchParams(location.search).get('test-session')?.replace(/[^a-z0-9-]/gi, '').slice(0, 40);
 const storagePrefix = qaSession ? `clever-qa-${qaSession}` : 'clever';
@@ -332,7 +340,9 @@ function stopRequest() {
 }
 
 function clearSelection() {
+  slideReader.cancelInteraction();
   selection = null; selectionRange = null; history = [];
+  previewExpanded = false;
   $('#selection-tools').classList.add('hidden');
   globalThis.CSS?.highlights?.delete('read-selection');
   slideReader.clearSelection();
@@ -372,6 +382,7 @@ async function openDocument(id, restorePosition = true) {
 }
 
 function updateView() {
+  $('#focus-toggle').classList.toggle('hidden', view !== 'reader');
   $('#reader-view').classList.toggle('hidden', view !== 'reader');
   $('#collection-view').classList.toggle('hidden', view === 'reader');
   $$('[data-view]').forEach(b => {
@@ -386,8 +397,10 @@ function updateView() {
 }
 
 function quoteHtml(selected) {
-  const image = selected?.image && /^data:image\/(jpeg|png);base64,/.test(selected.image) ? `<img class="region-preview" src="${escape(selected.image)}" alt="框选区域截图"><div class="region-caption">${selected.includeImage ? '将发送这张区域截图和对应文字' : '仅发送文字，截图不发送'}</div>` : '';
-  return selected ? `<div class="selected-quote"><div class="selected-label"><span>${selected.sourceType === 'slide' ? '幻灯片选区' : '当前选区'}</span><span>${selected.page ? '第 ' + selected.page + (selected.sourceType === 'slide' ? ' 张' : ' 页') : '原文'}</span></div>${image}<div class="selected-text">${escape(selected.text)}</div></div>` : '';
+  if (!selected) return '';
+  const image = selected.image && /^data:image\/(jpeg|png);base64,/.test(selected.image) ? escape(selected.image) : '';
+  const page = selected.page ? '第 ' + selected.page + (selected.sourceType === 'slide' ? ' 张' : ' 页') : '原文';
+  return `<section class="selected-quote"><details class="selection-preview"${previewExpanded ? ' open' : ''}><summary>${image ? `<img class="selection-thumb" src="${image}" alt="选区缩略图">` : `<span class="selection-thumb text-thumb">${icon('note')}</span>`}<span class="selection-summary"><strong>${page} · ${selected.includeImage ? '图片与文字' : '文字选区'}</strong><span>${escape(selected.hasText === false ? '框选的图片区域' : selected.text.slice(0, 75))}</span><small>点击查看选区</small></span>${icon('chevron')}</summary><div class="selection-detail">${image ? `<img class="region-preview" src="${image}" alt="框选区域截图">` : ''}<div class="selected-text">${escape(selected.text)}</div><p class="region-caption">${selected.includeImage ? '提问时发送这张截图及选区文字' : '提问时仅发送选区文字'}</p></div></details><button class="selection-cancel icon-button" data-action="dismiss-selection" aria-label="取消选区" title="取消选区（Esc）">${icon('close')}</button></section>`;
 }
 
 function renderAssistant() {
@@ -406,7 +419,7 @@ function renderAssistant() {
     target.innerHTML = quoteHtml(selection) + visionNote + '<h2 class="answer-title">针对选区提问</h2><p class="answer-summary">在下方输入问题，也可以直接解释选区或拆解逻辑。</p><div class="answer-actions"><button data-action="explain">' + icon('sparkles') + '解释选区</button><button data-action="logic">' + icon('layers') + '拆解逻辑</button></div>';
     return;
   }
-  target.innerHTML = `<div class="assistant-welcome"><div class="welcome-hero"><div class="welcome-symbol">${icon('sparkles')}</div><h2>让理解，跟上阅读。</h2></div><p>点击一个术语，或选中一句话。<br>带着原文，解释、拆解与追问。</p><div class="suggestion-heading">${active?.type === 'sample' ? '从这篇示例开始' : modelReady() ? '模型已就绪，选中原文即可提问' : '连接模型后，可解读导入的文档'}</div>${active?.type === 'sample' ? `<button class="suggestion" data-demo="term" aria-label="解释 “self-attention”">${icon('sparkles')}<div><strong>理解一个概念</strong><small>“self-attention” 是什么意思？</small></div>${icon('arrow-right')}</button><button class="suggestion" data-demo="sentence" aria-label="针对一句话提问">${icon('layers')}<div><strong>读懂一句话</strong><small>定位疑问，再拆解逻辑</small></div>${icon('arrow-right')}</button>` : modelReady() ? '' : `<button class="suggestion" data-action="settings">${icon('settings')}<div><strong>设置问答模型</strong><small>连接你的模型，继续追问原文</small></div>${icon('arrow-right')}</button>`}</div>`;
+  target.innerHTML = `<div class="assistant-welcome"><div class="welcome-hero"><div class="welcome-symbol">${icon('open-book')}</div><h2>选中原文，开始提问。</h2></div><p>点击一个术语，或选中一句话。<br>带着原文，解释、拆解与追问。</p><div class="suggestion-heading">${active?.type === 'sample' ? '从这篇示例开始' : modelReady() ? '模型已就绪，选中原文即可提问' : '连接模型后，可解读导入的文档'}</div>${active?.type === 'sample' ? `<button class="suggestion" data-demo="term" aria-label="解释 “self-attention”">${icon('sparkles')}<div><strong>理解一个概念</strong><small>“self-attention” 是什么意思？</small></div>${icon('arrow-right')}</button><button class="suggestion" data-demo="sentence" aria-label="针对一句话提问">${icon('layers')}<div><strong>读懂一句话</strong><small>定位疑问，再拆解逻辑</small></div>${icon('arrow-right')}</button>` : modelReady() ? '' : `<button class="suggestion" data-action="settings">${icon('settings')}<div><strong>设置问答模型</strong><small>连接你的模型，继续追问原文</small></div>${icon('arrow-right')}</button>`}</div>`;
 }
 
 function renderAnswer(record) {
@@ -431,7 +444,7 @@ function setSelection(value, range) {
   if (!text) return false;
   if (text.length > 8000) { toast('选区过长，请选择不超过 8000 字的一段内容。'); return false; }
   const changed = !selection || selection.text !== text || selection.blockId !== value.blockId || JSON.stringify(selection.region) !== JSON.stringify(value.region) || selection.includeImage !== value.includeImage;
-  if (changed) { stopRequest(); history = []; currentRecord = null; }
+  if (changed) { stopRequest(); history = []; currentRecord = null; previewExpanded = false; }
   selection = { ...value, text };
   selectionRange = range?.cloneRange() || null;
   panel = 'explain';
@@ -539,12 +552,14 @@ function modelReady() {
 
 function updateModelStatus() {
   const label = !settings.enabled ? '本地辅助' : modelReady() ? '模型已配置' : '待补充模型设置';
-  $('#model-status').innerHTML = icon('sparkles') + `<span class="status-label">${escape(label)}</span>`;
+  $('#model-status').innerHTML = icon('message') + `<span class="status-label">${escape(label)}</span>`;
   $('#model-status').dataset.state = modelReady() ? 'ready' : 'local';
   $('#model-status').title = (profiles.find(profile => profile.id === settings.profileId)?.name || label) + ' · ' + (settings.model || '点击设置');
 }
 
 async function ask(action, question = '') {
+  workspaceLayout?.revealAssistant();
+  previewExpanded = false;
   if (!selection) { toast('请先点击词语或选中一段原文。'); return; }
   if (settings.enabled && !modelReady()) { toast('请在设置中补充模型信息或密钥。'); showSettings(); return; }
   if (selection.image && selection.includeImage && (!modelReady() || !settings.vision)) { toast('图片提问需要连接支持图片输入的模型；也可仅使用选区文字。'); renderAssistant(); return; }
@@ -703,9 +718,12 @@ $('#settings-form').addEventListener('submit', async event => {
   } finally { submit.disabled = false; }
 });
 
-function importProgress(text) {
-  $('#import-progress').textContent = text;
+function importProgress(text, page, total) {
+  $('#import-progress-label').textContent = text;
   $('#import-progress').classList.remove('hidden');
+  const meter = $('#import-meter');
+  meter.classList.toggle('hidden', !importController);
+  if (total) meter.value = page / total * 100; else meter.removeAttribute('value');
 }
 
 async function saveDocument(doc) {
@@ -724,6 +742,7 @@ async function handleFile(file) {
     const extension = file.name.split('.').at(-1).toLowerCase();
     if (extension === 'doc') throw new Error('旧版 .doc 暂不支持，请在 Word 或 WPS 中另存为 .docx。');
     if (!['pdf', 'docx', 'ppt', 'pptx', 'txt', 'md'].includes(extension)) throw new Error('请导入 PDF、Word (.docx)、PPT (.ppt / .pptx)、TXT 或 Markdown。');
+    importProgress('正在检查文档…');
     const checksum = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
     const duplicate = documents.find(d => d.checksum === checksum);
     if (duplicate) { $('#import-dialog').close(); await openDocument(duplicate.id); toast('这份文档已在文档库中。'); return; }
@@ -732,11 +751,15 @@ async function handleFile(file) {
     if (extension === 'pdf') parsed = await importPdf(file, importProgress);
     else if (extension === 'docx') parsed = await importDocx(file, importProgress);
     else if (['ppt', 'pptx'].includes(extension)) {
-      importProgress('正在通过本机演示软件读取幻灯片，请稍候…');
-      const response = await fetch('/api/presentations/import?extension=' + extension, { method: 'POST', headers: { ...apiHeaders(), 'Content-Type': 'application/octet-stream' }, body: file });
-      const value = await response.json();
-      if (!response.ok) throw new Error(value.error || '无法读取演示文件。');
+      importController = new AbortController();
+      $('#cancel-import').classList.remove('hidden'); $('#cancel-import').disabled = false;
+      importProgress('正在打开演示文件…');
+      const response = await fetch('/api/presentations/import?extension=' + extension + '&progress=1', { method: 'POST', signal: importController.signal, headers: { ...apiHeaders(), 'Content-Type': 'application/octet-stream' }, body: file });
+      const value = await readPresentationStream(response, ({ page, total, renderer }) => importProgress(page === total ? `${total} 张已读取，正在整理文档…` : `${renderer} · 已读取 ${page} / ${total} 张幻灯片`, page, total));
+      importController.signal.throwIfAborted();
       parsed = { ...value, blob: file };
+      $('#cancel-import').classList.add('hidden');
+      importProgress('正在保存文档…', value.pages, value.pages);
     }
     else {
       const text = await file.text();
@@ -746,9 +769,11 @@ async function handleFile(file) {
       if (!parsed.blocks.length) throw new Error('文件没有可阅读的内容。');
     }
     await saveDocument({ id: crypto.randomUUID(), title: file.name.replace(/\.[^.]+$/, ''), type: extension, author: extension === 'docx' ? 'Word 正文 · 本地解析' : ['ppt', 'pptx'].includes(extension) ? `${parsed.renderer || '演示软件'} · 本机读取` : '本地文档', createdAt: Date.now(), checksum, ...parsed });
-  } catch (error) { importProgress(error.message.includes('Invalid') ? '文档损坏或格式不支持，请检查文件。' : error.message); }
-  finally { importing = false; $('#file-input').disabled = false; $('#file-input').value = ''; }
+  } catch (error) { importProgress(error.name === 'AbortError' ? '已取消导入，可以重新选择文件。' : error.message.includes('Invalid') ? '文档损坏或格式不支持，请检查文件。' : error.message); }
+  finally { importing = false; importController = null; $('#cancel-import').classList.add('hidden'); $('#import-meter').classList.add('hidden'); $('#file-input').disabled = false; $('#file-input').value = ''; }
 }
+
+$('#cancel-import').addEventListener('click', () => { $('#cancel-import').disabled = true; importProgress('正在取消导入…'); importController?.abort(); });
 
 $('#file-input').addEventListener('change', event => handleFile(event.target.files[0]));
 const dropZone = $('#drop-zone');
@@ -890,8 +915,8 @@ document.addEventListener('click', async event => {
     else if (action === 'text-only' && selection?.hasText) { setSelection({ ...selection, includeImage: false }); renderAssistant(); toast('接下来的提问只发送选区文字。'); }
     else if (action === 'slide-previous' || action === 'slide-next') slideReader.jump(slideReader.current + (action === 'slide-next' ? 1 : -1), scrollBehavior());
     else if (action === 'explain' || action === 'logic') await ask(action);
-    else if (action === 'ask-focus') { $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
-    else if (action === 'dismiss-selection') $('#selection-tools').classList.add('hidden');
+    else if (action === 'ask-focus') { workspaceLayout?.revealAssistant(); $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
+    else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
     else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
     else if (action === 'cancel-request') { stopRequest(); renderAssistant(); }
     else if (action === 'star-current' && currentRecord) {
@@ -921,12 +946,19 @@ document.addEventListener('click', async event => {
   } catch (error) { toast(error.message || '操作失败，请重试。'); }
 });
 
-document.addEventListener('keydown', event => { if (event.key === 'Escape') $('#selection-tools').classList.add('hidden'); });
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  if (slideReader.cancelInteraction()) { event.preventDefault(); return; }
+  if (selection) { event.preventDefault(); stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); }
+});
+$('#assistant-body').addEventListener('toggle', event => { if (event.target.matches('.selection-preview')) previewExpanded = event.target.open; }, true);
 let resizeTimer;
 window.addEventListener('resize', () => { syncSegments(); $('#selection-tools').classList.add('hidden'); clearTimeout(resizeTimer); if (isPresentation()) resizeTimer = setTimeout(() => { const page = slideReader.current; slideReader.render(active, slideMode, slideZoom); slideReader.jump(page); if (selection?.region) slideReader.showSelection(selection); }, 200); else if (pdfMode === 'original') resizeTimer = setTimeout(async () => { try { await teardownPdf(); await renderOriginalPdf(); } catch { toast('PDF 页面重绘失败，请切换阅读模式重试。'); } }, 300); });
 
 async function init() {
   hydrateIcons();
+  workspaceLayout = initWorkspaceLayout(storagePrefix);
+  new ResizeObserver(() => { if (isPresentation()) slideReader.resize(); }).observe($('#reading-scroll'));
   const segmentObserver = new ResizeObserver(entries => entries.forEach(entry => syncSegment(entry.target)));
   $$('[data-segmented]').forEach(group => segmentObserver.observe(group));
   syncSegments();

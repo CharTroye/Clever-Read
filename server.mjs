@@ -145,7 +145,7 @@ export function createServer({ runtimeDirectory = path.join(path.dirname(root), 
     try {
       const url = new URL(req.url, `http://${host}`);
       if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res, vaultFor(req));
-      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.2.2' });
+      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.3.0' });
       if (url.pathname === '/api/capabilities' && req.method === 'GET') {
         const presentations = await presentationCapabilities();
         return json(res, 200, { presentations, wps: presentations.renderers.some(renderer => renderer.id === 'wps'), powerPoint: presentations.renderers.some(renderer => renderer.id === 'powerpoint'), keyVault: true });
@@ -162,7 +162,19 @@ export function createServer({ runtimeDirectory = path.join(path.dirname(root), 
       if (url.pathname === '/api/presentations/import' && req.method === 'POST') {
         if (!sameApp(req)) return json(res, 403, { error: '请从本地阅读应用导入 PPT。' });
         const extension = String(url.searchParams.get('extension') || '').toLowerCase();
-        return json(res, 200, await importPresentation(await bytes(req, 30 * 1024 * 1024), extension, path.join(runtimeDirectory, 'presentation-imports')));
+        const input = await bytes(req, 30 * 1024 * 1024), directory = path.join(runtimeDirectory, 'presentation-imports');
+        if (url.searchParams.get('progress') !== '1') return json(res, 200, await importPresentation(input, extension, directory));
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.flushHeaders();
+        const controller = new AbortController(), cancel = () => controller.abort();
+        res.on('close', cancel);
+        const send = value => { if (!res.destroyed) res.write(JSON.stringify(value) + '\n'); };
+        try {
+          const document = await importPresentation(input, extension, directory, { signal: controller.signal, onProgress: progress => send({ type: 'progress', ...progress }) });
+          send({ type: 'complete', document });
+        } catch (error) { send({ type: 'error', error: error.message }); }
+        finally { res.off('close', cancel); if (!res.destroyed) res.end(); }
+        return;
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: '不支持的请求方式。' });
       const filename = path.resolve(root, '.' + decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname));

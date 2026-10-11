@@ -23,7 +23,7 @@ export function presentationErrorMessage(message) {
   return message;
 }
 
-export async function importPresentation(bytes, extension, directory = path.join(project, '.runtime', 'presentation-imports'), { renderer = 'auto' } = {}) {
+export async function importPresentation(bytes, extension, directory = path.join(project, '.runtime', 'presentation-imports'), { renderer = 'auto', onProgress, signal } = {}) {
   if (!['ppt', 'pptx'].includes(extension)) throw new Error('请导入 .ppt 或 .pptx 文件。');
   if (process.platform !== 'win32') throw new Error('保留 PPT 排版需要 Windows 桌面版 WPS 演示或 Microsoft PowerPoint。');
   if (!['auto', 'wps', 'powerpoint'].includes(renderer)) throw new Error('不支持的幻灯片读取方式。');
@@ -41,7 +41,7 @@ export async function importPresentation(bytes, extension, directory = path.join
     temporary = await mkdtemp(path.join(path.resolve(directory), 'deck-'));
     input = path.join(temporary, 'source.' + extension);
     await writeFile(input, bytes);
-    await runPowerShell(script, ['-InputFile', input, '-OutputDirectory', temporary, '-Renderer', renderer], '', 600000);
+    await runPowerShell(script, ['-InputFile', input, '-OutputDirectory', temporary, '-Renderer', renderer], '', 600000, { onProgress, signal });
     const manifest = JSON.parse(await readFile(path.join(temporary, 'manifest.json'), 'utf8'));
     if (!Array.isArray(manifest.slides) || !manifest.slides.length || manifest.slides.length > 300) throw new Error('没有可阅读的幻灯片。');
     const slides = [];
@@ -60,7 +60,9 @@ export async function importPresentation(bytes, extension, directory = path.join
     return { slides, blocks, pages: slides.length, slideWidth: manifest.width, slideHeight: manifest.height, renderer: manifest.renderer, rendererId: manifest.rendererId };
   } catch (error) {
     if (input) await runPowerShell(script, ['-InputFile', input, '-CleanupOnly'], '', 10000).catch(() => {});
-    throw new Error(presentationErrorMessage(error.message));
+    const mapped = new Error(presentationErrorMessage(error.message));
+    if (error.name === 'AbortError') mapped.name = error.name;
+    throw mapped;
   } finally {
     if (temporary) {
       const base = path.resolve(directory) + path.sep;

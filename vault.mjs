@@ -6,16 +6,35 @@ import { fileURLToPath } from 'node:url';
 import { normalizeEndpoint, normalizeModelName } from './public/core.mjs';
 
 const scripts = path.join(path.dirname(fileURLToPath(import.meta.url)), 'scripts');
-export function runPowerShell(script, args = [], input = '', timeout = 15000) {
+export function runPowerShell(script, args = [], input = '', timeout = 15000, { onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(Object.assign(new Error('已取消导入。'), { name: 'AbortError' }));
     const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const output = [], errors = [];
-    const timer = setTimeout(() => { child.kill(); reject(new Error('本机处理超时，请重试。')); }, timeout);
-    child.stdout.on('data', chunk => output.push(chunk));
+    let timedOut = false, aborted = false, progressBuffer = '';
+    const cancel = () => { aborted = true; child.kill(); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeout);
+    child.stdout.on('data', chunk => {
+      output.push(chunk);
+      if (!onProgress) return;
+      progressBuffer += chunk.toString('utf8');
+      let end;
+      while ((end = progressBuffer.indexOf('\n')) >= 0) {
+        const line = progressBuffer.slice(0, end).trim(); progressBuffer = progressBuffer.slice(end + 1);
+        if (line.startsWith('CLEVER_PROGRESS:')) { try { onProgress(JSON.parse(line.slice(16))); } catch {} }
+      }
+    });
     child.stderr.on('data', chunk => errors.push(chunk));
-    child.on('error', error => { clearTimeout(timer); reject(error); });
-    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(Buffer.concat(output).toString('utf8').replace(/^\uFEFF/, '').trim()) : reject(new Error(Buffer.concat(errors).toString('utf8').trim() || '本机处理失败。')); });
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); };
+    child.on('error', error => { cleanup(); reject(error); });
+    child.on('close', code => {
+      cleanup();
+      if (aborted) return reject(Object.assign(new Error('已取消导入。'), { name: 'AbortError' }));
+      if (timedOut) return reject(new Error('本机处理超时，请重试。'));
+      code === 0 ? resolve(Buffer.concat(output).toString('utf8').replace(/^\uFEFF/, '').trim()) : reject(new Error(Buffer.concat(errors).toString('utf8').trim() || '本机处理失败。'));
+    });
     child.stdin.on('error', () => {});
     child.stdin.end(input);
   });

@@ -5,6 +5,18 @@ export function clampRegion(start, end) {
   return { x, y, w: Math.abs(clamp(end.x) - clamp(start.x)), h: Math.abs(clamp(end.y) - clamp(start.y)) };
 }
 
+export function adjustRegion(region, delta, handle = 'move', minimum = { w: .01, h: .01 }) {
+  const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+  const dx = Number(delta.x) || 0, dy = Number(delta.y) || 0;
+  if (handle === 'move') return { ...region, x: clamp(region.x + dx, 0, 1 - region.w), y: clamp(region.y + dy, 0, 1 - region.h) };
+  let left = region.x, top = region.y, right = left + region.w, bottom = top + region.h;
+  if (handle.includes('w')) left = clamp(left + dx, 0, right - Math.min(minimum.w, region.w));
+  if (handle.includes('e')) right = clamp(right + dx, left + Math.min(minimum.w, region.w), 1);
+  if (handle.includes('n')) top = clamp(top + dy, 0, bottom - Math.min(minimum.h, region.h));
+  if (handle.includes('s')) bottom = clamp(bottom + dy, top + Math.min(minimum.h, region.h), 1);
+  return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
 export function textInRegion(slide, region, width, height) {
   const selected = (slide.words || []).filter(word => {
     const x = (word.x + word.w / 2) / width;

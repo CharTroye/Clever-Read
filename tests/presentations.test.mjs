@@ -58,7 +58,9 @@ for (const extension of ['pptx', 'ppt']) test(`WPS-only import preserves images 
   assert.equal((await presentationCapabilities()).preferred, 'wps');
   const directory = await mkdtemp(path.join(os.tmpdir(), 'clever-wps-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const result = await importPresentation(fixtures[extension], extension, directory, { renderer: 'wps' });
+  const progress = [];
+  const result = await importPresentation(fixtures[extension], extension, directory, { renderer: 'wps', onProgress: value => progress.push(value.page) });
+  assert.deepEqual(progress, [0, 1, 2]);
   assert.equal(result.renderer, 'WPS'); assert.equal(result.rendererId, 'wps'); assert.equal(result.pages, 2);
   assert.ok(result.slides[1].image.startsWith('data:image/png;base64,'));
   const word = result.slides[0].words.find(word => word.text.includes('Self-attention'));
@@ -66,4 +68,13 @@ for (const extension of ['pptx', 'ppt']) test(`WPS-only import preserves images 
   const region = { x: (word.x - 1) / result.slideWidth, y: (word.y - 1) / result.slideHeight, w: (word.w + 2) / result.slideWidth, h: (word.h + 2) / result.slideHeight };
   assert.equal(textInRegion(result.slides[0], region, result.slideWidth, result.slideHeight), 'Self-attention');
   assert.deepEqual(await readdir(directory), []);
+});
+
+test('cancelling WPS import cleans temporary files and releases the importer', { skip: process.env.CLEVER_WPS_TEST !== '1' }, async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'clever-cancel-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const controller = new AbortController();
+  await assert.rejects(importPresentation(fixtures.pptx, 'pptx', directory, { renderer: 'wps', signal: controller.signal, onProgress: () => controller.abort() }), { name: 'AbortError' });
+  assert.deepEqual(await readdir(directory), []);
+  assert.equal((await importPresentation(fixtures.pptx, 'pptx', directory, { renderer: 'wps' })).pages, 2);
 });
