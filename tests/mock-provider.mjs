@@ -4,6 +4,7 @@ http.createServer(async (req, res) => {
   const chunks = []; for await (const chunk of req) chunks.push(chunk);
   try {
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    if (body.model === 'test-slow-model') await new Promise(resolve => setTimeout(resolve, 10000));
     if (body.model === 'test-invalid-model') {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'Model Not Exist: test-invalid-model', code: 'invalid_request_error' } }));

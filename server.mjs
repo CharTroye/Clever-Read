@@ -145,7 +145,7 @@ export function createServer({ runtimeDirectory = path.join(path.dirname(root), 
     try {
       const url = new URL(req.url, `http://${host}`);
       if (url.pathname === '/api/answer' && req.method === 'POST') return await answer(req, res, vaultFor(req));
-      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.5.0' });
+      if (url.pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, app: 'clever-read', version: '0.6.1' });
       if (url.pathname === '/api/capabilities' && req.method === 'GET') {
         const presentations = await presentationCapabilities();
         return json(res, 200, { presentations, wps: presentations.renderers.some(renderer => renderer.id === 'wps'), powerPoint: presentations.renderers.some(renderer => renderer.id === 'powerpoint'), keyVault: true });

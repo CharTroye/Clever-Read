@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f1f1ef">
+  <meta name="theme-color" content="#efefef">
+  <script src="/theme.js"></script>
   <meta name="description" content="Clever Read：在阅读的位置理解术语，拆解句子，追问原文。">
   <title>Clever Read · 文档库</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -14,67 +15,63 @@
 </head>
 <body>
   <div class="app-shell" data-view="library">
-    <aside class="app-sidebar" aria-label="主导航">
+    <header class="topbar">
       <button class="brand" data-view="library" aria-label="Clever Read 文档库"><span class="brand-mark" data-icon="open-book"></span><span>Clever<span class="brand-light">Read</span></span></button>
-      <div class="workspace-label">我的阅读空间</div>
+      <button class="quiet-button reader-back hidden" data-view="library"><span data-icon="back"></span>文档库</button>
+      <div class="breadcrumb"><span id="view-label">本机阅读空间</span><span id="breadcrumb-title" class="sr-only"></span><select id="document-switch" class="document-switch" aria-label="切换文档"></select></div>
+      <div class="topbar-actions"><button class="quiet-button hidden" id="focus-toggle" aria-pressed="true" title="收起原文解读"><span data-icon="sidebar"></span><span>解读</span></button><button class="icon-button" data-action="settings" aria-label="设置" title="设置"><span data-icon="settings"></span></button></div>
+    </header>
+    <aside class="app-sidebar" aria-label="主导航">
       <nav class="main-nav">
         <button class="nav-item active" data-library-filter="all" aria-current="page"><span data-icon="library"></span>所有文档<span class="nav-count" id="documents-count">0</span></button>
         <button class="nav-item" data-library-filter="recent"><span data-icon="clock"></span>最近阅读</button>
-        <button class="nav-item" data-view="notes" aria-label="阅读记录" title="阅读记录"><span data-icon="note"></span>阅读记录<span class="nav-count" id="notes-count">0</span></button>
-        <button class="nav-item" data-view="terms" aria-label="我的术语本" title="我的术语本"><span data-icon="bookmark"></span>我的术语本<span class="nav-count" id="terms-count">0</span></button>
       </nav>
       <div class="library-heading"><span>分类</span><button class="icon-button" data-action="new-category" aria-label="新建分类"><span data-icon="plus"></span></button></div>
       <nav id="category-list" class="category-list" aria-label="文档分类"></nav>
       <div class="app-sidebar-bottom">
-        <div class="local-note"><span data-icon="shield"></span><div>文档保存在本机</div></div>
-        <button class="nav-item" data-action="settings" aria-label="模型与阅读设置" title="模型与阅读设置"><span data-icon="settings"></span>模型与阅读设置</button>
+        <button class="nav-item" data-view="notes" aria-label="阅读记录" title="阅读记录"><span data-icon="note"></span>阅读记录<span class="nav-count" id="notes-count">0</span></button>
+        <button class="nav-item" data-view="terms" aria-label="我的术语本" title="我的术语本"><span data-icon="bookmark"></span>我的术语本<span class="nav-count" id="terms-count">0</span></button>
       </div>
     </aside>
     <div class="workspace">
-      <header class="topbar">
-        <button class="quiet-button reader-back hidden" data-view="library"><span data-icon="back"></span>文档库</button>
-        <div class="breadcrumb"><span id="view-label">本机阅读空间</span><span id="breadcrumb-title" class="sr-only"></span><select id="document-switch" class="document-switch" aria-label="切换文档"></select></div>
-        <div class="topbar-actions"><button class="quiet-button hidden" id="focus-toggle" aria-pressed="true" title="收起原文解读"><span data-icon="sidebar"></span><span>解读</span></button><button class="mode-pill" data-action="settings" id="model-status"><span data-icon="message"></span>本地辅助</button></div>
-      </header>
       <main id="library-view" class="library-view">
         <header class="library-top"><div><h1 id="library-title">文档库</h1><span id="library-count">正在打开本机文档库…</span></div><button class="button primary small" data-action="import"><span data-icon="plus"></span>导入文档</button></header>
-        <section id="resume-reading" class="resume-reading hidden" aria-label="继续阅读"><h2>继续阅读</h2><button id="resume-document" class="resume-document"><span class="resume-icon" data-icon="open-book"></span><span class="resume-copy"><strong id="resume-title"></strong><span id="resume-position"></span></span><span class="resume-action">继续<span data-icon="arrow-right"></span></span></button></section>
+        <section id="resume-reading" class="resume-reading hidden" aria-label="继续阅读"><button id="resume-document" class="resume-document"><span id="resume-thumbnail" class="resume-thumbnail" aria-hidden="true"></span><span class="resume-copy"><span class="resume-label">继续阅读</span><strong id="resume-title"></strong><span id="resume-position"></span></span><span class="resume-action">继续<span data-icon="arrow-right"></span></span></button></section>
         <div class="library-list-tools"><h2 id="library-list-title">所有文档</h2><label class="library-search"><span data-icon="search"></span><input id="library-search" type="search" placeholder="搜索文档" aria-label="搜索文档" maxlength="160"></label></div>
-        <div class="library-table-head" aria-hidden="true"><span>名称</span><span>分类</span><span>阅读位置</span><span></span></div><div id="document-list" class="library-documents"></div>
+        <div id="document-list" class="library-documents"></div>
         <p id="library-empty" class="library-empty" role="status">正在恢复文档与阅读位置…</p>
         <footer class="library-footer"><span>PDF / Word / PPT / 文本</span><span>本机保存</span></footer>
       </main>
       <main id="reader-view" class="reader-layout hidden">
         <section class="reading-column" aria-label="文档阅读区">
-          <div class="reader-toolbar">
+          <div class="reader-toolbar"><span id="source-format" class="source-format">原文</span><div class="toolbar-spacer"></div><div id="pdf-mode" class="reading-mode hidden" role="group" aria-label="PDF 阅读模式" data-segmented><button data-pdf-mode="reflow" class="active" aria-pressed="true">流式</button><button data-pdf-mode="original" aria-pressed="false">原版</button></div></div>
+          <div id="slide-hint" class="sr-only" role="status">拖动框选图片或文字，再向右侧助手提问</div>
+          <div id="reading-scroll" class="reading-scroll"><div id="document-content" class="document-content"></div></div>
+          <div class="reader-controls">
             <div class="reading-mode" role="group" aria-label="点击选择方式" data-segmented><button class="active" data-select-mode="word" aria-pressed="true" title="点击选择词语">选词</button><button data-select-mode="sentence" aria-pressed="false" title="点击选择整句">选句</button></div>
             <div id="ppt-mode" class="reading-mode hidden" role="group" aria-label="PPT 选择方式" data-segmented><button data-slide-mode="region" class="active" aria-pressed="true">框选</button><button data-slide-mode="text" aria-pressed="false" title="点击选择整个文字区域">文字区域</button></div>
-            <label class="assist-toggle"><input type="checkbox" id="click-assist" checked><span class="switch"></span>点击解释</label>
             <div class="toolbar-spacer"></div>
-            <div id="pdf-mode" class="reading-mode hidden" role="group" aria-label="PDF 阅读模式" data-segmented><button data-pdf-mode="reflow" class="active" aria-pressed="true">流式</button><button data-pdf-mode="original" aria-pressed="false">原版</button></div>
             <div id="slide-navigation" class="slide-navigation hidden"><button class="icon-button" data-action="slide-previous" aria-label="上一张幻灯片">‹</button><select id="slide-number" aria-label="跳转幻灯片"></select><button class="icon-button" data-action="slide-next" aria-label="下一张幻灯片">›</button></div>
             <div class="font-controls" role="group" aria-label="阅读字号或 PDF 缩放"><button class="icon-button" data-action="font-down" aria-label="缩小字号"><span data-icon="minus"></span></button><span id="font-value" class="font-value">18</span><button class="icon-button" data-action="font-up" aria-label="放大字号"><span data-icon="plus"></span></button></div>
           </div>
-          <div id="slide-hint" class="sr-only" role="status">拖动框选图片或文字，再向右侧助手提问</div>
-          <div id="reading-scroll" class="reading-scroll">
-            <div id="document-content" class="document-content"></div>
-          </div>
           <footer class="reader-footer"><span id="doc-meta">原创教学示例</span><div class="reading-position"><span id="reading-progress">阅读进度 0%</span><span class="reading-meter" aria-hidden="true"><span id="progress-fill"></span></span></div></footer>
         </section>
-        <div id="assistant-resizer" class="assistant-resizer" role="separator" aria-label="调整解读栏宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="420" aria-valuenow="334" tabindex="0"></div>
+        <div id="assistant-resizer" class="assistant-resizer" role="separator" aria-label="调整解读栏宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="420" aria-valuenow="340" tabindex="0"></div>
         <aside class="assistant-panel" aria-label="阅读助手">
-          <div class="assistant-header"><div>原文解读</div><button class="icon-button" data-action="clear-answer" aria-label="清空当前解读" title="清空当前解读"><span data-icon="refresh"></span></button></div>
+          <div class="assistant-header"><div>解读</div><button class="icon-button" data-action="widen-assistant" aria-label="加宽解读栏" title="加宽解读栏" aria-pressed="false"><span data-icon="focus"></span></button><button class="icon-button" data-action="clear-answer" aria-label="清空当前解读" title="清空当前解读"><span data-icon="refresh"></span></button></div>
           <div class="assistant-tabs" role="group" aria-label="助手内容" data-segmented><button class="active" data-panel="explain" aria-pressed="true">当前解读</button><button data-panel="history" aria-pressed="false">本篇记录<span id="history-count">0</span></button></div>
           <div id="assistant-body" class="assistant-body" aria-live="polite"></div>
           <div class="question-area">
             <div class="question-anchor" id="question-anchor">先在原文中选择一个词或句子</div>
-            <form id="question-form"><label class="sr-only" for="question">针对选区提问</label><textarea id="question" rows="2" placeholder="针对这段原文提问…" maxlength="4000" aria-describedby="question-anchor"></textarea><div class="question-bottom"><span>Enter 提问 · Shift + Enter 换行</span><button class="send-button" type="submit" aria-label="发送问题" title="先选择原文，再发送问题" disabled><span data-icon="send"></span></button></div></form>
+            <form id="question-form"><label class="sr-only" for="question">针对选区提问</label><textarea id="question" rows="2" placeholder="针对这段原文提问…" maxlength="4000" aria-describedby="question-anchor"></textarea><div class="question-bottom"><select id="depth" aria-label="解释深度"><option value="入门">入门解释</option><option value="专业">专业解释</option><option value="深入">深入解释</option></select><span>↵ 发送</span><button class="send-button" type="submit" aria-label="发送问题" title="先选择原文，再发送问题" disabled><span data-icon="send"></span></button></div></form>
+            <div id="question-status" class="question-status" role="status"></div>
             <div class="answer-note">回答供理解参考，请核对原文依据。</div>
           </div>
         </aside>
       </main>
       <main id="collection-view" class="collection-view hidden"><div class="collection-top"><div><div class="eyebrow">我的阅读空间</div><h1 id="collection-title">阅读记录</h1><p id="collection-description">保存的疑问与解读，随时回到原文。</p></div><button class="button secondary" data-action="export"><span data-icon="download"></span>导出 Markdown</button></div><label class="collection-search"><span data-icon="search"></span><input id="record-search" placeholder="搜索术语、问题或文档" aria-label="搜索阅读记录"></label><div id="records-list" class="records-grid"></div></main>
     </div>
+    <footer class="app-footer"><span><span data-icon="shield"></span>文档保存在本机</span><button class="mode-pill" data-action="models" id="model-status"><span data-icon="message"></span>本地辅助</button></footer>
   </div>
 
   <div id="selection-tools" class="selection-tools hidden" role="toolbar" aria-label="选区操作"><button data-action="explain"><span data-icon="open-book"></span>解释</button><button data-action="logic"><span data-icon="layers"></span>拆解逻辑</button><button data-action="ask-focus"><span data-icon="message"></span>提问</button><button class="icon-button" data-action="dismiss-selection" aria-label="取消选区" title="取消选区（Esc）"><span data-icon="close"></span></button></div>
@@ -89,20 +86,21 @@
   </dialog>
   <dialog id="settings-dialog" class="modal settings-modal" aria-labelledby="settings-title">
     <div class="modal-header"><h2 id="settings-title">设置</h2><button class="icon-button" data-close="settings-dialog" aria-label="关闭设置"><span data-icon="close"></span></button></div>
-    <div class="settings-navigation" role="group" aria-label="设置分类" data-segmented><button type="button" class="active" data-settings-pane="reading" aria-pressed="true">阅读</button><button type="button" data-settings-pane="models" aria-pressed="false">模型库</button></div>
     <form id="settings-form">
+      <nav class="settings-navigation" aria-label="设置分类"><button type="button" class="active" data-settings-pane="reading" aria-pressed="true"><span data-icon="open-book"></span>阅读偏好</button><button type="button" data-settings-pane="models" aria-pressed="false"><span data-icon="message"></span>模型连接</button></nav>
       <div class="settings-body">
         <section id="reading-settings" aria-label="阅读偏好">
-          <div class="settings-section-heading"><h3>阅读偏好</h3><p>让解读适合你的阅读方式。</p></div>
-          <label class="depth-setting">解释深度<select id="depth"><option value="入门">入门 · 直觉与例子</option><option value="专业">专业 · 定义与适用条件</option><option value="深入">深入 · 推导与逻辑关系</option></select></label>
+          <div class="settings-section-heading"><h3>阅读偏好</h3><p>调整正文与阅读习惯。</p></div>
+          <label class="preference-row">背景颜色<select id="reading-theme" aria-label="背景颜色"><option value="graphite">石墨黑</option><option value="gray">浅灰</option></select></label>
+          <label class="preference-row">正文字号<select id="reading-font" aria-label="正文字号"></select></label>
+          <label class="preference-row">正文行距<select id="reading-leading" aria-label="正文行距"><option value="1.6">紧凑 · 1.6</option><option value="1.85">舒适 · 1.85</option><option value="2">宽松 · 2.0</option></select></label>
+          <p class="helper">字号与行距适用于流式正文；PDF 原版和幻灯片使用缩放。</p>
+          <label class="settings-toggle-row"><span><strong>点击词语即解释</strong><small>在原文旁查看简短释义。</small></span><input id="click-assist" type="checkbox" role="switch" checked></label>
           <label class="settings-toggle-row"><span><strong>继续上次阅读</strong><small>启动后直接回到上次打开的文档。</small></span><input id="resume-on-launch" type="checkbox" role="switch"></label>
-          <div class="settings-section-heading settings-model-heading"><h3>原文问答</h3><p id="active-model-label">尚未选择模型</p></div>
-          <label class="settings-toggle-row"><span><strong>使用模型解读</strong><small>发送选区、相关原文与追问历史。</small></span><input id="use-model" type="checkbox" role="switch"></label>
-          <button class="settings-link" type="button" data-settings-pane="models">管理模型库<span data-icon="arrow-right"></span></button>
         </section>
-        <section id="model-settings" class="hidden" aria-labelledby="model-library-title"><div class="model-library-heading"><div><h3 id="model-library-title">模型库</h3><p class="helper">保存接口与密钥，随时切换。</p></div><button class="button secondary small" type="button" data-action="new-profile"><span data-icon="plus"></span>新增模型</button></div><div id="model-profiles"></div><p id="vault-error" class="form-error hidden" role="alert"></p></section>
+        <section id="model-settings" class="hidden" aria-labelledby="model-library-title"><div class="model-library-heading"><div><h3 id="model-library-title">模型连接</h3><p class="helper">选择当前解读使用的模型。</p></div><button class="button secondary small" type="button" data-action="new-profile"><span data-icon="plus"></span>添加连接</button></div><fieldset id="model-profiles"><legend class="sr-only">当前解读连接</legend></fieldset><p id="vault-error" class="form-error hidden" role="alert"></p></section>
         <section id="model-editor" class="hidden" aria-label="模型配置">
-          <button class="settings-editor-back quiet-button" type="button" data-action="profile-back"><span data-icon="back"></span>模型库</button><h3 id="model-editor-title">新增模型</h3>
+          <button class="settings-editor-back quiet-button" type="button" data-action="profile-back"><span data-icon="back"></span>模型连接</button><h3 id="model-editor-title">新增模型</h3>
           <label>显示名称<input id="profile-name" placeholder="例如：论文阅读模型" maxlength="120" autocomplete="off"></label>
           <label>接口地址<input id="endpoint" type="url" placeholder="https://api.deepseek.com" autocomplete="off" aria-describedby="endpoint-help"></label>
           <p class="helper" id="endpoint-help">基础地址或完整接口均可，自动补齐 /chat/completions。</p>

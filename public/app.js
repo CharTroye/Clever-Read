@@ -104,8 +104,12 @@ const scrollBehavior = () => document.body.dataset.input === 'keyboard' || match
 
 function updateComposer() {
   const button = $('#question-form button');
-  button.disabled = !selection || !!requestController;
-  button.title = !selection ? '先选择原文，再发送问题' : requestController ? '正在解读，请稍候' : '发送问题（Enter）';
+  button.disabled = !selection && !requestPending;
+  button.dataset.pending = String(requestPending);
+  button.title = requestPending ? '停止生成，保留问题' : !selection ? '先选择原文，再发送问题' : '发送问题（Enter）';
+  button.setAttribute('aria-label', requestPending ? '停止生成' : '发送问题');
+  button.innerHTML = requestPending ? '<span class="stop-mark" aria-hidden="true"></span>' : icon('send');
+  $('#depth').disabled = requestPending;
   $('#question-anchor').title = $('#question-anchor').textContent;
   $('#question-anchor').dataset.selected = String(!!selection);
 }
@@ -133,6 +137,8 @@ let livePdf = null;
 let pageObserver = null;
 let renderingGeneration = 0;
 let requestController = null;
+let requestPending = false;
+let failedRequest = null;
 let requestGeneration = 0;
 let history = [];
 let apiKey = '';
@@ -155,9 +161,10 @@ let restoringPosition = false;
 let libraryState = { filter: 'all', query: '', scrollTop: 0, categories: [] };
 const readerSessions = new Map();
 const answerCache = new Map();
+const thumbnailCache = new Map();
 const qaSession = new URLSearchParams(location.search).get('test-session')?.replace(/[^a-z0-9-]/gi, '').slice(0, 40);
 const storagePrefix = qaSession ? `clever-qa-${qaSession}` : 'clever';
-const defaults = { enabled: false, endpoint: '', model: '', profileId: '', vision: false, depth: '入门', fontSize: 18, clickAssist: true, resumeOnLaunch: false };
+const defaults = { enabled: false, endpoint: '', model: '', profileId: '', vision: false, depth: '入门', fontSize: 18, lineHeight: 1.85, clickAssist: true, resumeOnLaunch: false, theme: document.documentElement.dataset.theme || 'gray' };
 let hadPreferences = false;
 let settings = { ...defaults };
 try {
@@ -167,6 +174,7 @@ try {
   if (settings.endpoint) settings.endpoint = normalizeEndpoint(settings.endpoint);
   settings.model = normalizeModelName(settings.model, settings.endpoint);
 } catch { /* Use safe defaults for an interrupted settings write. */ }
+settings.theme = ['graphite', 'gray'].includes(settings.theme) ? settings.theme : defaults.theme;
 try {
   const saved = JSON.parse(localStorage.getItem(storagePrefix + '-library') || '{}');
   libraryState = { filter: typeof saved.filter === 'string' ? saved.filter : 'all', query: typeof saved.query === 'string' ? saved.query.slice(0, 160) : '', scrollTop: Math.max(0, Number(saved.scrollTop) || 0), categories: Array.isArray(saved.categories) ? saved.categories.map(categoryName).filter(Boolean) : [] };
@@ -175,7 +183,13 @@ try {
 const apiHeaders = () => ({ 'Content-Type': 'application/json', ...(qaSession ? { 'X-Clever-Test-Session': qaSession } : {}) });
 const isPresentation = () => ['ppt', 'pptx'].includes(active?.type) && Array.isArray(active?.slides);
 const slideReader = new SlideReader($('#document-content'), {
-  onSelect: (value, rect) => { const accepted = setSelection(value); if (accepted) showSelectionTools({ getClientRects: () => [rect], getBoundingClientRect: () => rect }); return accepted; },
+  onSelect: (value, rect) => {
+    const peek = !value.includeImage && value.text.length <= 80 && settings.clickAssist;
+    const accepted = setSelection(value, null, peek);
+    if (accepted && peek) { termPeekRange = { getBoundingClientRect: () => ({ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }) }; ask('explain', '', 'peek'); }
+    else if (accepted) showSelectionTools({ getClientRects: () => [rect], getBoundingClientRect: () => rect });
+    return accepted;
+  },
   onError: toast,
   onPage: (page, total) => { $('#slide-number').value = String(page); $('[data-action="slide-previous"]').disabled = page <= 1; $('[data-action="slide-next"]').disabled = page >= total; }
 });
@@ -251,6 +265,11 @@ function persistPreferences() {
   catch { toast('设置未能保存，请检查浏览器存储空间。'); }
 }
 
+function applyTheme() {
+  document.documentElement.dataset.theme = settings.theme;
+  $('meta[name="theme-color"]').content = settings.theme === 'graphite' ? '#1e1e1e' : '#efefef';
+}
+
 function updateCounts() {
   $('#notes-count').textContent = records.length;
   $('#terms-count').textContent = records.filter(r => r.starred).length;
@@ -271,12 +290,38 @@ function renderLibrary() {
   $('#library-count').textContent = `${filtered.length} 份文档`;
   $('#library-empty').classList.toggle('hidden', !!filtered.length);
   $('#library-empty').textContent = libraryState.query ? '没有找到匹配的文档。' : libraryState.filter === 'recent' ? '打开文档后，会在这里保留阅读位置。' : '这个分类还没有文档，可以在文档列表中调整分类。';
-  $('#document-list').innerHTML = filtered.map(doc => `<div class="library-document-row"><button class="library-document-open" data-document="${escape(doc.id)}"><span class="document-glyph" data-format="${escape(doc.type)}">${icon(['ppt', 'pptx'].includes(doc.type) ? 'slides' : doc.type === 'pdf' ? 'pdf' : 'file')}</span><span class="library-document-copy"><span class="library-document-title">${escape(doc.title)}</span><span class="library-document-meta">${escape(documentMeta(doc))}</span></span></button><select class="document-category" data-category-document="${escape(doc.id)}" aria-label="${escape(doc.title)} 的分类"><option value="">未分类</option>${names.map(name => `<option value="${escape(name)}" ${name === doc.category ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select><span class="library-document-position">${escape(readingPosition(doc))}</span><div class="document-row-actions"><button class="icon-button document-more" popovertarget="doc-menu-${escape(doc.id)}" aria-label="${escape(doc.title)} 的更多操作">${icon('more')}</button><div id="doc-menu-${escape(doc.id)}" class="document-menu" popover="auto"><button data-document="${escape(doc.id)}">${icon('open-book')}打开阅读</button>${doc.type !== 'sample' ? `<button class="menu-danger" data-delete-document="${escape(doc.id)}">${icon('trash')}移除文档</button>` : ''}</div></div></div>`).join('');
+  $('#document-list').innerHTML = filtered.map(doc => `<div class="library-document-row"><button class="library-document-open" data-document="${escape(doc.id)}"><span class="document-glyph" data-format="${escape(doc.type)}">${icon(['ppt', 'pptx'].includes(doc.type) ? 'slides' : doc.type === 'pdf' ? 'pdf' : 'file')}</span><span class="library-document-copy"><span class="library-document-title">${escape(doc.title)}</span><span class="library-document-meta">${escape(documentMeta(doc) + (doc.category ? ' · ' + doc.category : ''))}</span></span></button><span class="library-document-position">${escape(readingPosition(doc))}</span><div class="document-row-actions"><button class="icon-button document-more" popovertarget="doc-menu-${escape(doc.id)}" aria-label="${escape(doc.title)} 的更多操作">${icon('more')}</button><div id="doc-menu-${escape(doc.id)}" class="document-menu" popover="auto"><button data-document="${escape(doc.id)}">${icon('open-book')}打开阅读</button><label class="menu-category">分类<select class="document-category" data-category-document="${escape(doc.id)}" aria-label="${escape(doc.title)} 的分类"><option value="">未分类</option>${names.map(name => `<option value="${escape(name)}" ${name === doc.category ? 'selected' : ''}>${escape(name)}</option>`).join('')}</select></label>${doc.type !== 'sample' ? `<button class="menu-danger" data-delete-document="${escape(doc.id)}">${icon('trash')}移除文档</button>` : ''}</div></div></div>`).join('');
   const last = documents.filter(doc => doc.lastOpenedAt).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
   $('#resume-reading').classList.toggle('hidden', !last);
-  if (last) { $('#resume-document').dataset.document = last.id; $('#resume-title').textContent = last.title; $('#resume-position').textContent = readingPosition(last) + (last.readingState?.selected?.text ? ' · ' + last.readingState.selected.text.slice(0, 60) : ' · ' + documentMeta(last)); }
+  if (last) { $('#resume-document').dataset.document = last.id; $('#resume-title').textContent = last.title; $('#resume-position').textContent = readingPosition(last) + (last.readingState?.selected?.text ? ' · ' + last.readingState.selected.text.slice(0, 60) : ' · ' + documentMeta(last)); renderResumeThumbnail(last); }
   updateLibraryNavigation();
   updateCounts();
+}
+
+function renderResumeThumbnail(doc) {
+  const target = $('#resume-thumbnail'), pageNumber = doc.readingState?.position?.page || doc.readingState?.selected?.page || 1;
+  const key = doc.id + ':' + pageNumber;
+  if (target.dataset.preview === key) return;
+  target.dataset.preview = key;
+  const blocks = doc.blocks?.filter(block => !block.unreadable).slice(0, 3) || [];
+  target.innerHTML = `<span class="mini-document"><strong>${escape(doc.title)}</strong>${blocks.map(block => `<p>${escape(block.text.slice(0, 250))}</p>`).join('')}</span>`;
+  const slide = doc.slides?.find(slide => slide.page === pageNumber) || doc.slides?.[0];
+  if (slide?.image) { target.innerHTML = `<img src="${escape(slide.image)}" alt="">`; return; }
+  if (doc.type !== 'pdf' || !doc.blob) return;
+  if (!thumbnailCache.has(key)) {
+    thumbnailCache.set(key, (async () => {
+      const pdf = await loadPdf(doc.blob);
+      try {
+        const page = await pdf.getPage(Math.min(pageNumber, pdf.numPages));
+        const viewport = page.getViewport({ scale: 160 / page.getViewport({ scale: 1 }).width });
+        const canvas = document.createElement('canvas'); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        return canvas.toDataURL('image/png');
+      } finally { await pdf.destroy(); }
+    })().catch(() => null));
+    if (thumbnailCache.size > 6) thumbnailCache.delete(thumbnailCache.keys().next().value);
+  }
+  thumbnailCache.get(key).then(url => { if (url && target.dataset.preview === key) target.innerHTML = `<img src="${url}" alt="">`; });
 }
 
 function updateLibraryNavigation() {
@@ -404,6 +449,13 @@ async function renderPdfPage(element, pdf = livePdf, generation = renderingGener
     if (generation !== renderingGeneration) return;
     const library = await pdfLibrary();
     await new library.TextLayer({ textContentSource: await page.getTextContent(), container: layer, viewport }).render();
+    if (generation !== renderingGeneration) return;
+    if (selection?.page === Number(element.dataset.page) && globalThis.Highlight && CSS.highlights) {
+      const spans = Array.from(layer.querySelectorAll('span'));
+      const text = spans.map(span => span.textContent).join('');
+      const at = text.toLowerCase().indexOf(selection.text.toLowerCase());
+      if (at >= 0) { selectionRange = rangeForOffsets(layer, at, at + selection.text.length); if (selectionRange) CSS.highlights.set('read-selection', new Highlight(selectionRange)); }
+    }
     element.dataset.rendered = 'true';
   } finally { delete element.dataset.rendering; }
 }
@@ -412,6 +464,7 @@ function stopRequest() {
   requestGeneration++;
   requestController?.abort();
   requestController = null;
+  requestPending = false;
   updateComposer();
 }
 
@@ -420,6 +473,8 @@ function clearSelection() {
   slideReader.cancelInteraction();
   selection = null; selectionRange = null; history = [];
   previewExpanded = false;
+  failedRequest = null;
+  $('#question-status').textContent = '';
   $('#selection-tools').classList.add('hidden');
   globalThis.CSS?.highlights?.delete('read-selection');
   slideReader.clearSelection();
@@ -432,7 +487,7 @@ async function openDocument(id, restorePosition = true) {
   if (id === readerDocumentId && restorePosition) {
     view = 'reader'; updateView(); active.lastOpenedAt = Date.now();
     requestAnimationFrame(() => { restoreReadingPosition(active.readingState); rememberReader(); });
-    $('#reader-view .reader-toolbar button')?.focus({ preventScroll: true });
+    $('#reader-view .reader-controls button')?.focus({ preventScroll: true });
     return;
   }
   const generation = ++openGeneration;
@@ -480,11 +535,11 @@ async function openDocument(id, restorePosition = true) {
   $('#ppt-mode').classList.toggle('hidden', !isPresentation());
   $('#slide-navigation').classList.toggle('hidden', !isPresentation());
   $('[data-select-mode]').closest('.reading-mode').classList.toggle('hidden', isPresentation());
-  $('#click-assist').closest('label').classList.toggle('hidden', isPresentation());
   setPressed('[data-slide-mode]', b => b.dataset.slideMode === slideMode);
   setPressed('[data-select-mode]', b => b.dataset.selectMode === selectMode);
   $('#slide-hint').textContent = '拖动框选图片或文字，再向右侧助手提问';
-  $('#font-value').textContent = isPresentation() ? Math.round(slideZoom * 100) + '%' : pdfMode === 'original' ? Math.round(pdfZoom * 100) + '%' : fontSize;
+  $('#font-value').textContent = isPresentation() ? Math.round(slideZoom * 100) + '%' : pdfMode === 'original' ? Math.round(pdfZoom * 100) + '%' : fontSize + ' px';
+  $('#source-format').textContent = active.type === 'sample' ? '原创教学示例' : active.type.toUpperCase() + (isPresentation() ? ' · ' + (active.renderer || '原版') : ' · 原文');
   $('#breadcrumb-title').textContent = active.title;
   $('#doc-meta').textContent = isPresentation() ? `${active.pages} 张幻灯片 · ${active.renderer || '演示文稿'} 原版` : active.type === 'sample' ? '原创教学示例 · 可点击标记术语' : active.type === 'pdf' ? `${active.pages} 页 PDF · 本地解析` : active.type === 'docx' ? 'Word 正文 · 本地解析' : '文本 · 本地保存';
   try { localStorage.setItem(storagePrefix + '-active', active.id); } catch { /* Nonessential preference. */ }
@@ -497,6 +552,7 @@ function updateView() {
   $('.app-shell').dataset.view = view;
   $('#focus-toggle').classList.toggle('hidden', view !== 'reader');
   $('.reader-back').classList.toggle('hidden', view !== 'reader');
+  $('.brand').classList.toggle('hidden', view === 'reader');
   $('#library-view').classList.toggle('hidden', view !== 'library');
   $('#reader-view').classList.toggle('hidden', view !== 'reader');
   $('#collection-view').classList.toggle('hidden', !['notes', 'terms'].includes(view));
@@ -529,6 +585,15 @@ function renderAssistant() {
     target.innerHTML = docRecords.length ? docRecords.map(r => `<div class="mini-record"><button data-record="${escape(r.id)}"><strong>${escape(r.result.title)}</strong><p>${escape(r.question || r.selected.text)}</p><span>${timeLabel(r.createdAt)} · ${r.result.mode === 'model' ? '模型解读' : '本地辅助'}</span></button></div>`).join('') : '<div class="empty-collection"><p>本篇还没有阅读记录。<br>选中一段原文，开始第一个问题。</p></div>';
     return;
   }
+  if (requestPending) {
+    target.setAttribute('aria-busy', 'true');
+    target.innerHTML = quoteHtml(selection) + '<div class="loading-state"><p>正在结合选区和相关原文思考…</p><div class="loading-bars"><span></span><span></span><span></span></div><button data-action="cancel-request">停止生成</button></div>';
+    return;
+  }
+  if (failedRequest?.docId === active?.id) {
+    target.innerHTML = quoteHtml(selection) + `<div class="error-state" role="alert"><h2>暂时无法完成解读</h2>${escape(failedRequest.message)}<br><button data-action="retry-answer">重试</button><button data-action="models">检查模型连接</button></div>`;
+    return;
+  }
   if (currentRecord) { renderAnswer(currentRecord); return; }
   if (selection) {
     const visionNote = selection.image && selection.includeImage && !settings.vision ? `<div class="vision-notice">图片提问需要支持图片输入的模型。${selection.hasText ? '<button data-action="text-only">仅用选区文字提问</button>' : ''}<button data-action="settings">选择视觉模型</button></div>` : '';
@@ -552,10 +617,14 @@ function positionTermPeek() {
   const rect = termPeekRange.getBoundingClientRect(), peek = $('#term-peek');
   const reading = $('#reading-scroll').getBoundingClientRect();
   if (!rect.width || rect.bottom < reading.top || rect.top > reading.bottom) return closeTermPeek();
-  const left = Math.max(12, Math.min(rect.left, innerWidth - peek.offsetWidth - 12));
-  const below = rect.bottom + 10;
-  const top = below + peek.offsetHeight <= innerHeight - 12 ? below : Math.max(12, rect.top - peek.offsetHeight - 10);
-  peek.style.left = left + 'px'; peek.style.top = top + 'px';
+  peek.style.maxHeight = '';
+  const left = Math.max(reading.left + 8, Math.min(rect.left, reading.right - peek.offsetWidth - 8));
+  const belowSpace = Math.min(reading.bottom, innerHeight - 12) - rect.bottom - 18;
+  const aboveSpace = rect.top - Math.max(reading.top, 12) - 18;
+  const below = belowSpace >= peek.offsetHeight || belowSpace >= aboveSpace;
+  peek.style.maxHeight = Math.max(120, below ? belowSpace : aboveSpace) + 'px';
+  const top = below ? rect.bottom + 10 : rect.top - peek.offsetHeight - 10;
+  peek.style.left = Math.max(12, Math.min(left, innerWidth - peek.offsetWidth - 12)) + 'px'; peek.style.top = Math.min(top, innerHeight - peek.offsetHeight - 12) + 'px';
 }
 function renderTermPeek(pending = false, error = '') {
   if (!termPeekRange || view !== 'reader') return;
@@ -583,7 +652,7 @@ function setSelection(value, range, inline = false) {
   if (!text) return false;
   if (text.length > 8000) { toast('选区过长，请选择不超过 8000 字的一段内容。'); return false; }
   const changed = !selection || selection.text !== text || selection.blockId !== value.blockId || JSON.stringify(selection.region) !== JSON.stringify(value.region) || selection.includeImage !== value.includeImage;
-  if (changed) { stopRequest(); history = []; currentRecord = null; previewExpanded = false; }
+  if (changed) { stopRequest(); history = []; currentRecord = null; previewExpanded = false; failedRequest = null; $('#question-status').textContent = ''; }
   selection = { ...value, text };
   selectionRange = range?.cloneRange() || null;
   panel = 'explain';
@@ -652,7 +721,7 @@ $('#document-content').addEventListener('pointerup', event => {
 });
 
 $('#document-content').addEventListener('click', async event => {
-  if (!$('#click-assist').checked || event.detail > 1 || window.getSelection()?.toString().trim()) return;
+  if (!settings.clickAssist || event.detail > 1 || window.getSelection()?.toString().trim()) return;
   if (!event.target.closest('.document-paragraph, .textLayer span')) return;
   const caret = caretAt(event.clientX, event.clientY);
   if (!caret || !$('#document-content').contains(caret.startContainer)) return;
@@ -681,7 +750,15 @@ $('#document-content').addEventListener('click', async event => {
   if (!part?.text) return;
   const range = rangeForOffsets(element, part.start, part.end);
   if (!setSelection({ text: part.text, blockId: found.block.id, page: found.block.page }, range, selectMode === 'word')) return;
-  if (selectMode === 'word' && range) { termPeekRange = range.cloneRange(); await ask('explain', '', 'peek'); }
+  if (selectMode === 'word' && range) {
+    const peekRange = range.cloneRange(), x = event.clientX, y = event.clientY;
+    termPeekRange = { getBoundingClientRect: () => {
+      const rect = peekRange.getBoundingClientRect();
+      const clicked = Array.from(peekRange.getClientRects()).find(part => x >= part.left && x <= part.right && y >= part.top && y <= part.bottom);
+      return clicked ? { top: rect.top, bottom: rect.bottom, left: clicked.left, right: clicked.right, width: clicked.width, height: rect.height } : rect;
+    } };
+    await ask('explain', '', 'peek');
+  }
   else showSelectionTools(range);
 });
 
@@ -692,10 +769,10 @@ function modelReady() {
 }
 
 function updateModelStatus() {
-  const label = !settings.enabled ? '本地辅助' : modelReady() ? '模型已配置' : '待补充模型设置';
+  const label = !settings.enabled ? '本地辅助' : modelReady() ? profiles.find(profile => profile.id === settings.profileId)?.name || settings.model : '待补充模型设置';
   $('#model-status').innerHTML = icon('message') + `<span class="status-label">${escape(label)}</span>`;
   $('#model-status').dataset.state = modelReady() ? 'ready' : 'local';
-  $('#model-status').title = (profiles.find(profile => profile.id === settings.profileId)?.name || label) + ' · ' + (settings.model || '点击设置');
+  $('#model-status').title = !settings.enabled ? '本地辅助 · 未调用模型，点击选择连接' : (settings.model || '点击设置') + ' · ' + (settings.vision ? '支持图片与文字' : '仅文字');
 }
 
 async function ask(action, question = '', surface = 'panel') {
@@ -706,16 +783,18 @@ async function ask(action, question = '', surface = 'panel') {
   if (selection.image && selection.includeImage && (!modelReady() || !settings.vision)) { toast('图片提问需要连接支持图片输入的模型；也可仅使用选区文字。'); renderAssistant(); return; }
   stopRequest();
   const generation = requestGeneration;
+  requestPending = true;
+  failedRequest = null;
+  $('#question-status').textContent = '正在生成…';
   const selected = structuredClone(selection);
   const doc = active;
   const contexts = retrieveContext(doc, selected, question);
   panel = 'explain';
   setPressed('[data-panel]', b => b.dataset.panel === panel);
   $('#selection-tools').classList.add('hidden');
-  $('#question-form button').disabled = true;
-  $('#question-form button').title = '正在解读，请稍候';
+  updateComposer();
   $('#assistant-body').setAttribute('aria-busy', 'true');
-  $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="loading-state"><p>${modelReady() ? '正在结合选区和相关原文思考…' : '正在查找内置术语与相关原文…'}</p><div class="loading-bars"><span></span><span></span><span></span></div><button data-action="cancel-request">取消</button></div>`;
+  $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="loading-state"><p>${modelReady() ? '正在结合选区和相关原文思考…' : '正在查找内置术语与相关原文…'}</p><div class="loading-bars"><span></span><span></span><span></span></div><button data-action="cancel-request">停止生成</button></div>`;
   renderTermPeek(true);
   const requestSelection = { ...selected }; delete requestSelection.image;
   const cacheKey = JSON.stringify([doc.id, requestSelection, action, question, contexts, settings.depth, settings.enabled, settings.endpoint, settings.model, settings.profileId, settings.vision, history]);
@@ -738,19 +817,22 @@ async function ask(action, question = '', surface = 'panel') {
     records.unshift(record);
     if (generation !== requestGeneration || active.id !== doc.id) { updateCounts(); return; }
     currentRecord = record;
+    requestPending = false;
     if (result.mode === 'model') history = [...history, { role: 'user', content: question || (action === 'logic' ? '拆解这段内容的逻辑' : '解释当前选区') }, { role: 'assistant', content: JSON.stringify(result) }].slice(-6);
     updateCounts(); renderAssistant(); renderTermPeek();
     $('#assistant-body').scrollTop = 0;
-    $('#question').value = '';
+    if (action === 'ask' && $('#question').value.trim() === question) $('#question').value = '';
     sizeQuestion();
     if (view === 'reader') rememberReader();
-    else if (active.readingState) { const selectedState = { ...selected }; delete selectedState.image; active.readingState = { ...active.readingState, recordId: record.id, selected: selectedState, draft: '' }; await storage('readingStates', 'put', active.readingState); const session = readerSessions.get(active.id); if (session) Object.assign(session, { currentRecord: record, history: [...history] }); }
+    else if (active.readingState) { const selectedState = { ...selected }; delete selectedState.image; active.readingState = { ...active.readingState, recordId: record.id, selected: selectedState, draft: $('#question').value }; await storage('readingStates', 'put', active.readingState); const session = readerSessions.get(active.id); if (session) Object.assign(session, { currentRecord: record, history: [...history] }); }
   } catch (error) {
     if (generation !== requestGeneration || error.name === 'AbortError') return;
-    $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="error-state">${escape(error.message)}<br><button data-action="settings">检查模型设置</button></div>`;
+    failedRequest = { action, question, surface, docId: doc.id, message: error.message };
+    $('#question-status').textContent = '生成失败，问题已保留。';
+    $('#assistant-body').innerHTML = quoteHtml(selected) + `<div class="error-state" role="alert"><h2>暂时无法完成解读</h2>${escape(error.message)}<br><button data-action="retry-answer">重试</button><button data-action="models">检查模型连接</button></div>`;
     renderTermPeek(false, error.message);
   } finally {
-    if (generation === requestGeneration) { requestController = null; updateComposer(); $('#assistant-body').setAttribute('aria-busy', 'false'); }
+    if (generation === requestGeneration) { requestController = null; requestPending = false; if (!failedRequest) $('#question-status').textContent = ''; updateComposer(); $('#assistant-body').setAttribute('aria-busy', 'false'); }
   }
 }
 
@@ -799,12 +881,33 @@ async function jumpToSource(id) {
 }
 
 function renderProfiles() {
-  $('#model-profiles').innerHTML = profiles.length ? profiles.map(profile => `<article class="model-profile ${profile.id === settings.profileId ? 'current' : ''}"><div><strong>${escape(profile.name)}</strong>${profile.id === settings.profileId ? '<span class="profile-badge">当前使用</span>' : ''}<p>${escape(profile.model)} · ${profile.vision ? '支持图片' : '文字模型'}</p><small>${escape(profile.endpoint)}</small><small class="profile-key-status">${profile.hasKey ? '密钥已保存' : '未保存密钥'}</small></div><div class="profile-actions"><button type="button" data-use-profile="${profile.id}" ${profile.id === settings.profileId && settings.enabled ? 'disabled' : ''}>${profile.id === settings.profileId && settings.enabled ? '已启用' : '使用'}</button><button type="button" data-edit-profile="${profile.id}">编辑</button><button type="button" data-remove-profile="${profile.id}" aria-label="移除 ${escape(profile.name)}">移除</button></div></article>`).join('') : '<div class="vault-empty"><h3>选择你的解读模型</h3><p>添加接口与密钥，就能随时向原文提问。</p><button type="button" class="button secondary" data-action="new-profile">新增模型</button></div>';
+  const radio = (id, checked, name, description, extra = '') => `<label><input type="radio" name="active-connection" value="${escape(id)}" ${checked ? 'checked' : ''}><span class="profile-copy"><span><strong>${escape(name)}</strong>${extra}</span>${description}</span></label>`;
+  $('#model-profiles').innerHTML = '<legend class="sr-only">当前解读连接</legend>' + profiles.map(profile => `<article class="model-profile ${profile.id === settings.profileId && settings.enabled ? 'current' : ''}">${radio(profile.id, profile.id === settings.profileId && settings.enabled, profile.name, `<small>${escape(profile.model)}</small><small>${escape(profile.endpoint)}</small><small class="profile-key-status">${profile.hasKey ? '密钥已加密保存' : '未保存密钥'}</small>`, `<span class="profile-capability">${profile.vision ? '图文' : '文字'}</span>`)}<div class="profile-actions"><button type="button" data-edit-profile="${escape(profile.id)}" aria-label="编辑 ${escape(profile.name)}">编辑</button><button type="button" data-remove-profile="${escape(profile.id)}" aria-label="移除 ${escape(profile.name)}">移除</button></div></article>`).join('') + (!settings.profileId && settings.enabled && settings.model ? `<article class="model-profile">${radio('session', true, settings.model + ' · 本次会话', `<small>${escape(settings.endpoint)}</small><small>密钥未保存，关闭页面后失效。</small>`)}</article>` : '') + `<article class="model-profile">${radio('local', !settings.enabled, '本地辅助', '<small>内置术语与相关原文 · 未调用模型</small>')}</article>`;
   $('#vault-error').textContent = vaultError;
   $('#vault-error').classList.toggle('hidden', !vaultError);
-  $('#active-model-label').textContent = profiles.find(profile => profile.id === settings.profileId)?.name || (settings.model ? settings.model + ' · 本次会话' : '尚未选择模型，请先在模型库添加。');
   $('#vault-protection').textContent = vaultState.protection === 'windows-dpapi' ? 'API Key 使用本机 Windows 账户加密保存，重启后仍可使用。' : 'API Key 加密保存在本机，重启后仍可使用。';
 }
+
+$('#model-profiles').addEventListener('change', async event => {
+  if (event.target.name !== 'active-connection') return;
+  const id = event.target.value, submit = $('#settings-form button[type="submit"]');
+  submit.disabled = true;
+  $('#model-profiles').querySelectorAll('input').forEach(input => input.disabled = true);
+  try {
+    if (id === 'local') { stopRequest(); settings.enabled = false; }
+    else if (id !== 'session') {
+      await vaultRequest('/api/vault/activate', { method: 'POST', body: JSON.stringify({ id }) });
+      stopRequest(); applyProfile(profiles.find(profile => profile.id === vaultState.activeId));
+    }
+    persistPreferences(); answerCache.clear(); updateModelStatus(); renderAssistant();
+    toast(id === 'local' ? '已切换为本地辅助。' : '已切换模型连接。');
+  } catch (error) {
+    $('#settings-error').textContent = error.message; $('#settings-error').classList.remove('hidden');
+  } finally {
+    renderProfiles(); submit.disabled = false;
+    Array.from($('#model-profiles').querySelectorAll('input')).find(input => input.checked)?.focus({ preventScroll: true });
+  }
+});
 
 function setSettingsPane(next, focus = false) {
   settingsPane = next;
@@ -812,8 +915,7 @@ function setSettingsPane(next, focus = false) {
   $('#reading-settings').classList.toggle('hidden', next !== 'reading');
   $('#model-settings').classList.toggle('hidden', next !== 'models');
   $('#model-editor').classList.toggle('hidden', next !== 'editor');
-  $('.settings-navigation').classList.toggle('hidden', next === 'editor');
-  setPressed('.settings-navigation [data-settings-pane]', b => b.dataset.settingsPane === next);
+  setPressed('.settings-navigation [data-settings-pane]', b => b.dataset.settingsPane === (next === 'editor' ? 'models' : next));
   $('#key-help').classList.toggle('hidden', next === 'reading');
   $('#settings-error').classList.add('hidden');
   $('#settings-form button[type="submit"]').textContent = next === 'editor' ? '保存并使用' : next === 'models' ? '完成' : '保存设置';
@@ -840,8 +942,10 @@ function fillModelDraft(profile = null) {
 function showSettings(pane = 'reading') {
   closeTermPeek();
   $('#resume-on-launch').checked = settings.resumeOnLaunch;
-  $('#depth').value = settings.depth;
-  $('#use-model').checked = settings.enabled;
+  $('#reading-font').value = String(fontSize);
+  $('#reading-leading').value = String(settings.lineHeight);
+  $('#reading-theme').value = settings.theme;
+  $('#click-assist').checked = settings.clickAssist;
   $('#api-key').value = '';
   renderProfiles();
   setSettingsPane(pane);
@@ -856,15 +960,18 @@ $('#settings-form').addEventListener('submit', async event => {
   submit.disabled = true;
   try {
     if (settingsPane !== 'editor') {
-      const enabled = $('#use-model').checked;
-      if (enabled && (!settings.endpoint || !settings.model || (!apiKey && !profiles.find(profile => profile.id === settings.profileId)?.hasKey && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(settings.endpoint).hostname)))) {
-        setSettingsPane('models');
-        throw new Error('请先添加或选择一个模型，再启用模型解读。');
+      if (settingsPane === 'reading') {
+        const position = view === 'reader' ? readingPositionSnapshot() : null;
+        fontSize = Number($('#reading-font').value);
+        settings = { ...settings, fontSize, lineHeight: Number($('#reading-leading').value), clickAssist: $('#click-assist').checked, resumeOnLaunch: $('#resume-on-launch').checked, theme: $('#reading-theme').value === 'graphite' ? 'graphite' : 'gray' };
+        applyTheme();
+        document.documentElement.style.setProperty('--body-size', fontSize + 'px');
+        document.documentElement.style.setProperty('--body-leading', String(settings.lineHeight));
+        if (!isPresentation() && pdfMode !== 'original') $('#font-value').textContent = fontSize + ' px';
+        if (position) requestAnimationFrame(() => { restoreReadingPosition(position); requestAnimationFrame(() => rememberReader()); });
+        persistPreferences();
       }
-      if (enabled !== settings.enabled) { stopRequest(); answerCache.clear(); }
-      settings = { ...settings, enabled, depth: $('#depth').value, resumeOnLaunch: $('#resume-on-launch').checked };
-      persistPreferences(); updateModelStatus(); renderAssistant();
-      $('#settings-dialog').close(); toast('设置已保存。');
+      $('#settings-dialog').close(); if (settingsPane === 'reading') toast('阅读偏好已保存。');
       return;
     }
     let endpoint = normalizeEndpoint($('#endpoint').value.trim());
@@ -881,7 +988,7 @@ $('#settings-form').addEventListener('submit', async event => {
       applyProfile(profiles.find(profile => profile.id === vaultState.activeId));
     } else { apiKey = key; settings = { ...settings, enabled: true, endpoint, model, profileId: '', vision }; }
     persistPreferences(); updateModelStatus(); answerCache.clear();
-    $('#api-key').value = ''; $('#use-model').checked = true;
+    $('#api-key').value = '';
     renderProfiles(); setSettingsPane('models'); renderAssistant();
     toast(model !== enteredModel ? `已保存并使用。模型 ID 已转换为 ${model}。` : save ? '模型已保存并启用。' : '已启用，仅用于本次会话。');
   } catch (error) {
@@ -966,7 +1073,8 @@ $('#text-import').addEventListener('submit', async event => {
   } catch { importProgress('保存失败，请检查浏览器的存储空间。'); }
 });
 
-$('#question-form').addEventListener('submit', event => { event.preventDefault(); if ($('#question-form button').disabled) return; const q = $('#question').value.trim(); if (q) ask('ask', q); else toast('请输入想问的问题。'); });
+$('#question-form').addEventListener('submit', event => { event.preventDefault(); if (requestPending) { closeTermPeek(); stopRequest(); renderAssistant(); $('#question-status').textContent = '已停止生成，问题仍保留。'; rememberReader(); return; } if ($('#question-form button').disabled) return; const q = $('#question').value.trim(); if (q) ask('ask', q); else toast('请输入想问的问题。'); });
+$('#depth').addEventListener('change', () => { settings.depth = $('#depth').value; persistPreferences(); });
 $('#question').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('#question-form').requestSubmit(); } });
 $('#question').addEventListener('input', sizeQuestion);
 $('#question').addEventListener('input', () => { clearTimeout(scrollTimer); scrollTimer = setTimeout(() => rememberReader(), 500); });
@@ -976,7 +1084,7 @@ $('#document-list').addEventListener('change', async event => {
   const id = event.target.dataset.categoryDocument, doc = documents.find(doc => doc.id === id);
   if (!doc) return;
   const previous = doc.category; doc.category = categoryName(event.target.value);
-  try { const stored = { ...doc }; delete stored.readingState; delete stored.lastOpenedAt; await storage('documents', 'put', stored); renderLibrary(); $$('[data-category-document]').find(el => el.dataset.categoryDocument === id)?.focus({ preventScroll: true }); }
+  try { const stored = { ...doc }; delete stored.readingState; delete stored.lastOpenedAt; await storage('documents', 'put', stored); renderLibrary(); $$('[popovertarget]').find(el => el.getAttribute('popovertarget') === 'doc-menu-' + id)?.focus({ preventScroll: true }); }
   catch { doc.category = previous; event.target.value = previous || ''; toast('分类未能保存，请检查浏览器存储空间。'); }
 });
 $('#category-form').addEventListener('submit', event => {
@@ -985,7 +1093,6 @@ $('#category-form').addEventListener('submit', event => {
   libraryState.categories.push(name); persistLibrary(); renderLibrary(); $('#category-dialog').close(); toast('分类已创建，可在文档列表中选择。');
 });
 $('#record-search').addEventListener('input', renderCollection);
-$('#click-assist').addEventListener('change', () => { settings.clickAssist = $('#click-assist').checked; persistPreferences(); });
 $('#document-switch').addEventListener('change', event => openDocument(event.target.value).catch(error => toast(error.message)));
 $('#slide-number').addEventListener('change', event => slideReader.jump(event.target.value, scrollBehavior()));
 $('#import-dialog').addEventListener('cancel', event => { if (importing) { event.preventDefault(); toast('正在解析文档，请稍候。'); } });
@@ -1023,7 +1130,7 @@ async function changePdfMode(mode) {
   stopRequest(); clearSelection(); currentRecord = null;
   await teardownPdf(); pdfMode = mode;
   setPressed('[data-pdf-mode]', b => b.dataset.pdfMode === mode);
-  $('#font-value').textContent = mode === 'original' ? Math.round(pdfZoom * 100) + '%' : fontSize;
+  $('#font-value').textContent = mode === 'original' ? Math.round(pdfZoom * 100) + '%' : fontSize + ' px';
   renderAssistant();
   if (mode === 'original') await renderOriginalPdf(); else renderText();
   $('#reading-scroll').scrollTop = 0; updateProgress();
@@ -1056,21 +1163,12 @@ document.addEventListener('click', async event => {
     if (button.dataset.slideMode) { slideMode = button.dataset.slideMode; slideReader.setMode(slideMode); setPressed('[data-slide-mode]', b => b === button); $('#slide-hint').textContent = slideMode === 'region' ? '拖动框选图片或文字，再向右侧提问' : '点击幻灯片上的文字区域，再向右侧提问'; return; }
     if (button.dataset.settingsPane) { setSettingsPane(button.dataset.settingsPane); return; }
     if (button.dataset.editProfile) { fillModelDraft(profiles.find(profile => profile.id === button.dataset.editProfile)); return; }
-    if (button.dataset.useProfile) {
-      const submit = $('#settings-form button[type="submit"]');
-      button.disabled = true; submit.disabled = true;
-      try {
-        await vaultRequest('/api/vault/activate', { method: 'POST', body: JSON.stringify({ id: button.dataset.useProfile }) });
-        stopRequest(); applyProfile(profiles.find(profile => profile.id === vaultState.activeId)); persistPreferences(); answerCache.clear(); updateModelStatus(); renderProfiles(); $('#use-model').checked = true; renderAssistant(); toast('已切换模型。');
-      } finally { button.disabled = false; submit.disabled = false; }
-      return;
-    }
     if (button.dataset.removeProfile) {
       const profile = profiles.find(profile => profile.id === button.dataset.removeProfile);
       if (await confirmRemoval('移除这个模型配置？', `“${profile.name}”及其 API Key 将从本机模型库移除。`)) {
         await vaultRequest('/api/vault', { method: 'DELETE', body: JSON.stringify({ id: profile.id }) });
         if (settings.profileId === profile.id) { stopRequest(); apiKey = ''; settings = { ...settings, profileId: '', enabled: false, endpoint: '', model: '', vision: false }; persistPreferences(); answerCache.clear(); updateModelStatus(); renderAssistant(); }
-        renderProfiles(); $('#use-model').checked = settings.enabled;
+        renderProfiles();
       } return;
     }
     if (button.dataset.importTab) {
@@ -1113,6 +1211,9 @@ document.addEventListener('click', async event => {
     const action = button.dataset.action;
     if (action === 'import') { $('#import-progress').classList.add('hidden'); $('#import-dialog').showModal(); }
     else if (action === 'settings') showSettings(button.closest('.assistant-panel') ? 'models' : 'reading');
+    else if (action === 'models') showSettings('models');
+    else if (action === 'widen-assistant') workspaceLayout?.widen();
+    else if (action === 'retry-answer' && failedRequest?.docId === active?.id) { const failed = failedRequest; await ask(failed.action, failed.question, failed.surface); }
     else if (action === 'new-category') { $('#category-form').reset(); $('#category-error').classList.add('hidden'); $('#category-dialog').showModal(); }
     else if (action === 'new-profile') fillModelDraft();
     else if (action === 'profile-back') { $('#api-key').value = ''; setSettingsPane('models', true); }
@@ -1124,7 +1225,7 @@ document.addEventListener('click', async event => {
     else if (action === 'ask-focus') { closeTermPeek(); workspaceLayout?.revealAssistant(); $('#selection-tools').classList.add('hidden'); $('#question').focus(); $('#question').scrollIntoView({ block: 'nearest', behavior: scrollBehavior() }); }
     else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
     else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
-    else if (action === 'cancel-request') { closeTermPeek(); stopRequest(); renderAssistant(); }
+    else if (action === 'cancel-request') { closeTermPeek(); stopRequest(); renderAssistant(); $('#question-status').textContent = '已停止生成，问题仍保留。'; rememberReader(); }
     else if (action === 'star-current' && currentRecord) {
       currentRecord.starred = !currentRecord.starred; await storage('records', 'put', currentRecord);
       updateCounts(); renderAssistant(); toast(currentRecord.starred ? '已加入术语本。' : '已从术语本移除。');
@@ -1146,7 +1247,7 @@ document.addEventListener('click', async event => {
         $('#font-value').textContent = Math.round(pdfZoom * 100) + '%'; await renderOriginalPdf();
       } else {
         fontSize = Math.max(15, Math.min(26, fontSize + direction)); settings.fontSize = fontSize; persistPreferences();
-        document.documentElement.style.setProperty('--body-size', fontSize + 'px'); $('#font-value').textContent = fontSize;
+        document.documentElement.style.setProperty('--body-size', fontSize + 'px'); $('#font-value').textContent = fontSize + ' px';
       }
     }
   } catch (error) { toast(error.message || '操作失败，请重试。'); }
@@ -1178,14 +1279,27 @@ window.addEventListener('resize', () => {
 });
 
 async function init() {
+  applyTheme();
   hydrateIcons();
-  workspaceLayout = initWorkspaceLayout(storagePrefix, { beforeChange: () => { if (view !== 'reader') return null; rememberReader(); return readingPositionSnapshot(); }, afterChange: position => { if (active?.readingState) { active.readingState.focused = workspaceLayout.getState().focused; storage('readingStates', 'put', active.readingState).catch(() => {}); } if (isPresentation() && view === 'reader') slideReader.resize(); if (position) requestAnimationFrame(() => { restoreReadingPosition(position); requestAnimationFrame(() => rememberReader()); }); } });
+  workspaceLayout = initWorkspaceLayout(storagePrefix, { beforeChange: () => { if (view !== 'reader') return null; closeTermPeek(); $('#selection-tools').classList.add('hidden'); rememberReader(); return readingPositionSnapshot(); }, afterChange: async position => {
+    if (active?.readingState) { active.readingState.focused = workspaceLayout.getState().focused; storage('readingStates', 'put', active.readingState).catch(() => {}); }
+    const documentId = active?.id;
+    try {
+      if (isPresentation() && view === 'reader') slideReader.resize();
+      else if (pdfMode === 'original' && view === 'reader') { await teardownPdf(); if (view !== 'reader' || active?.id !== documentId) return; await renderOriginalPdf(); }
+      if (position && view === 'reader' && active?.id === documentId) requestAnimationFrame(() => { restoreReadingPosition(position); requestAnimationFrame(() => rememberReader()); });
+    } catch { toast('页面重绘失败，请切换阅读模式重试。'); }
+  } });
   new ResizeObserver(() => { if (isPresentation() && view === 'reader') slideReader.resize(); }).observe($('#reading-scroll'));
   const segmentObserver = new ResizeObserver(entries => entries.forEach(entry => syncSegment(entry.target)));
   $$('[data-segmented]').forEach(group => segmentObserver.observe(group));
   syncSegments();
   fontSize = Math.max(15, Math.min(26, settings.fontSize || 18));
+  settings.lineHeight = [1.6, 1.85, 2].includes(Number(settings.lineHeight)) ? Number(settings.lineHeight) : 1.85;
+  $('#reading-font').innerHTML = Array.from({ length: 12 }, (_, i) => `<option value="${i + 15}">${i + 15} px</option>`).join('');
   document.documentElement.style.setProperty('--body-size', fontSize + 'px');
+  document.documentElement.style.setProperty('--body-leading', String(settings.lineHeight));
+  $('#depth').value = ['入门', '专业', '深入'].includes(settings.depth) ? settings.depth : '入门';
   $('#click-assist').checked = settings.clickAssist;
   await loadVault();
   updateModelStatus();

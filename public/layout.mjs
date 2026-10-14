@@ -2,15 +2,15 @@ export function initWorkspaceLayout(prefix, { beforeChange = () => null, afterCh
   const shell = document.querySelector('.app-shell'), reader = document.querySelector('#reader-view');
   const toggle = document.querySelector('#focus-toggle'), separator = document.querySelector('#assistant-resizer');
   let saved = {}; try { saved = JSON.parse(localStorage.getItem(prefix + '-reader-layout') || '{}'); } catch {}
-  let focused = false, width = Math.max(280, Math.min(420, Number(saved.width) || 334)), drag = null;
+  let focused = false, width = Math.max(280, Math.min(420, Number(saved.width) || 340)), drag = null;
   const persist = () => { try { localStorage.setItem(prefix + '-reader-layout', JSON.stringify({ width })); } catch {} };
   function setWidth(next) {
-    const maximum = Math.max(280, Math.min(420, reader.clientWidth - 380));
+    const maximum = Math.max(280, Math.min(420, reader.clientWidth - 460));
     const visible = Math.round(Math.max(280, Math.min(maximum, next)));
     reader.style.setProperty('--assistant-width', visible + 'px');
     separator.setAttribute('aria-valuenow', String(visible)); separator.setAttribute('aria-valuemax', String(maximum));
     if (reader.clientWidth) {
-      const available = matchMedia('(min-width:801px)').matches ? reader.clientWidth - visible - 8 - 64 : reader.clientWidth - 48;
+      const available = matchMedia('(min-width:801px)').matches ? reader.clientWidth - (focused ? 0 : visible + 8) - 64 : reader.clientWidth - 36;
       reader.style.setProperty('--reading-page-width', Math.max(160, Math.min(850, available)) + 'px');
       reader.style.setProperty('--reading-text-width', Math.max(160, Math.min(700, available)) + 'px');
     }
@@ -21,9 +21,13 @@ export function initWorkspaceLayout(prefix, { beforeChange = () => null, afterCh
     toggle.setAttribute('aria-pressed', String(!focused));
     toggle.setAttribute('aria-label', focused ? '展开原文解读' : '收起原文解读');
     toggle.title = focused ? '展开原文解读' : '收起原文解读';
-    // Keep the source in its original column, including while the note is closed.
-    // Recentring the page would move a word away from the pointer mid-reading.
     setWidth(width);
+    const widen = document.querySelector('[data-action="widen-assistant"]');
+    const wide = width >= 380;
+    widen.disabled = reader.clientWidth < 840;
+    widen.setAttribute('aria-pressed', String(wide));
+    widen.setAttribute('aria-label', wide ? '恢复解读栏宽度' : '加宽解读栏');
+    widen.title = widen.disabled ? '扩大窗口后可加宽解读栏' : wide ? '恢复解读栏宽度' : '加宽解读栏';
   }
   let panelAnimation;
   function change(next) {
@@ -49,19 +53,19 @@ export function initWorkspaceLayout(prefix, { beforeChange = () => null, afterCh
     const position = drag.position;
     if (cancel) width = drag.previous;
     if (separator.hasPointerCapture(drag.id)) separator.releasePointerCapture(drag.id);
-    drag = null; shell.classList.remove('resizing'); setWidth(width); persist(); afterChange(position);
+    drag = null; shell.classList.remove('resizing'); update(); persist(); afterChange(position);
   }
   separator.addEventListener('pointerup', () => finish()); separator.addEventListener('pointercancel', () => finish(true));
   separator.addEventListener('keydown', event => {
     if (event.key === 'Escape' && drag) { event.preventDefault(); event.stopPropagation(); finish(true); }
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-      event.preventDefault(); const position = beforeChange(); width = setWidth(event.key === 'Home' ? 280 : event.key === 'End' ? 420 : width + (event.key === 'ArrowLeft' ? 16 : -16)); persist(); afterChange(position);
+      event.preventDefault(); const position = beforeChange(); width = setWidth(event.key === 'Home' ? 280 : event.key === 'End' ? 420 : width + (event.key === 'ArrowLeft' ? 16 : -16)); update(); persist(); afterChange(position);
     }
   });
-  new ResizeObserver(() => { if (reader.clientWidth) setWidth(width); }).observe(reader);
+  new ResizeObserver(() => { if (reader.clientWidth) update(); }).observe(reader);
   const stopAnimation = () => panelAnimation?.cancel();
   document.addEventListener('keydown', stopAnimation);
   matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', stopAnimation);
   update();
-  return { revealAssistant() { change(false); }, getState() { return { focused }; }, setState(state) { focused = !!state.focused; update(); }, refresh: update };
+  return { revealAssistant() { change(false); }, widen() { const position = beforeChange(); width = width >= 380 ? 340 : 380; update(); persist(); afterChange(position); }, getState() { return { focused, width }; }, setState(state) { focused = !!state.focused; update(); }, refresh: update };
 }

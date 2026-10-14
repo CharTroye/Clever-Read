@@ -25,5 +25,6 @@ export function readingPosition(doc) {
     const index = doc.blocks?.findIndex(block => block.id === state.position.blockId);
     if (index >= 0) return `第 ${index + 1} 段`;
   }
+  if (!(state.progress > 0) && doc.pages) return `第 1 ${['ppt', 'pptx'].includes(doc.type) ? '张' : '页'}`;
   return state.progress > 0 ? `已读 ${Math.round(Math.min(1, state.progress) * 100)}%` : '开头';
 }
