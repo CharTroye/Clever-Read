@@ -32,7 +32,7 @@ test('local proxy relays selected context, filters citations and rejects other o
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     requestBody = JSON.parse(Buffer.concat(chunks).toString());
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: '联调回执', summary: '测试回答', sources: ['p-1', 'fake'] }) } }] }));
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ title: '联调回执', brief: '专用于浮窗的短释义。', summary: '测试回答', background: 'A general explanation beyond the supplied document.', limitations: '', sources: ['p-1', 'fake'] }) } }] }));
   });
   const app = createServer();
   provider.listen(0, '127.0.0.1'); app.listen(0, '127.0.0.1');
@@ -46,6 +46,9 @@ test('local proxy relays selected context, filters citations and rejects other o
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.deepEqual(result.result.sources, ['p-1']);
+  assert.equal(result.result.brief, '专用于浮窗的短释义。');
+  assert.equal(result.result.background, 'A general explanation beyond the supplied document.');
+  assert.equal(result.result.limitations, '');
   const user = JSON.parse(requestBody.messages.at(-1).content);
   assert.equal(user.selection, 'selected passage'); assert.equal(user.question, 'Why?'); assert.equal(user.sourceFragments[0].page, 3);
   assert.equal(requestBody.messages[1].content, 'Previous question');

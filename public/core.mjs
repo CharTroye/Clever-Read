@@ -107,16 +107,18 @@ export function validateModelResult(raw, contexts) {
   if (typeof raw !== 'string' || !raw.trim()) throw new Error('模型返回了空回答。');
   let parsed;
   try { parsed = JSON.parse(raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
-  catch { return { title: '阅读解读', summary: raw.slice(0, 18000), context: '', logic: [], limitations: '模型未返回结构化引用，请自行核对原文。', sources: [], mode: 'model' }; }
+  catch { return { title: '阅读解读', summary: raw.slice(0, 18000), context: '', background: '', logic: [], limitations: '模型未返回结构化引用，请自行核对原文。', sources: [], mode: 'model' }; }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('模型回答格式不正确，请重试。');
   if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) throw new Error('模型没有返回有效的解读内容，请重试。');
   const allowed = new Set(contexts.map(c => c.id));
   return {
     title: String(parsed.title || '阅读解读').slice(0, 200),
+    brief: typeof parsed.brief === 'string' ? parsed.brief.trim().slice(0, 360) : '',
     summary: String(parsed.summary || '').slice(0, 14000),
     context: String(parsed.context || '').slice(0, 6000),
+    background: typeof parsed.background === 'string' ? parsed.background.slice(0, 6000) : '',
     logic: Array.isArray(parsed.logic) ? parsed.logic.slice(0, 8).map(v => String(v).slice(0, 2000)) : [],
-    limitations: String(parsed.limitations || '请结合引用原文核对。').slice(0, 2000),
+    limitations: (typeof parsed.limitations === 'string' ? parsed.limitations : '请结合引用原文核对。').slice(0, 2000),
     sources: [...new Set(Array.isArray(parsed.sources) ? parsed.sources.filter(id => typeof id === 'string' && allowed.has(id)) : [])],
     mode: 'model'
   };
@@ -127,6 +129,6 @@ export function exportMarkdown(records, documents) {
   return '# Clever Read 阅读记录\n\n' + records.map(r => {
     const result = r.result;
     const sources = r.contexts.filter(c => result.sources.includes(c.id));
-    return `## ${result.title}\n\n文档：${titles.get(r.docId) || r.docTitle || '已移除文档'}\n\n选区：\n> ${r.selected.text.replace(/\n/g, '\n> ')}\n\n问题：${r.question || '解释选区'}\n\n${result.summary}\n\n${result.context}\n\n${result.logic.map(v => '- ' + v).join('\n')}\n\n说明：${result.limitations}\n\n来源：${result.mode === 'model' ? '模型回答' : '本地辅助，未调用模型'}\n\n${sources.map(c => `> ${c.text}\n\n${c.page ? '第 ' + c.page + ' 页' : c.section} · ${c.id}`).join('\n\n')}\n\n---\n`;
+    return `## ${result.title}\n\n文档：${titles.get(r.docId) || r.docTitle || '已移除文档'}\n\n选区：\n> ${r.selected.text.replace(/\n/g, '\n> ')}\n\n问题：${r.question || '解释选区'}\n\n${result.summary}\n\n${result.context}\n\n${result.background ? `### 知识补充（通用知识）\n\n${result.background}\n\n` : ''}${result.logic.map(v => '- ' + v).join('\n')}${result.limitations ? `\n\n说明：${result.limitations}` : ''}\n\n来源：${result.mode === 'model' ? '模型回答' : result.localKind === 'context' ? '原文对照，未调用模型' : '内置词典，未调用模型'}\n\n${sources.length ? '原文定位：\n\n' : ''}${sources.map(c => `> ${c.text}\n\n${c.page ? '第 ' + c.page + ' 页' : c.section} · ${c.id}`).join('\n\n')}\n\n---\n`;
   }).join('\n');
 }

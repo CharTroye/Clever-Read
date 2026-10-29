@@ -49,6 +49,34 @@ test('unstructured responses stay plain text and never fabricate sources', () =>
   assert.equal(result.summary, '<script>alert(1)</script>');
 });
 
+test('dedicated brief explanations are optional, bounded and distinct from the full answer', () => {
+  const result = validateModelResult(JSON.stringify({ brief: '  两句内的简短定义。 ', summary: '更完整的解释。' }), []);
+  assert.equal(result.brief, '两句内的简短定义。');
+  assert.equal(result.summary, '更完整的解释。');
+  assert.equal(validateModelResult(JSON.stringify({ summary: '旧版回答' }), []).brief, '');
+  assert.equal(validateModelResult(JSON.stringify({ summary: '正文', brief: 'a'.repeat(500) }), []).brief.length, 360);
+  const known = localExplanation(sampleDocument, { text: 'self-attention', blockId: 's-3' }, 'explain', []);
+  assert.equal(known.localKind, 'dictionary');
+  assert.ok(known.brief);
+  assert.equal(localExplanation(sampleDocument, { text: '漏抗' }, 'explain', []).localKind, 'context');
+});
+
+test('supplementary knowledge is preserved and exported separately from document locations', () => {
+  const contexts = [{ id: 'p-1', text: 'The device uses DMA to reduce CPU involvement.', page: 1 }];
+  const background = 'DMA is a general computer architecture concept; the supplied paragraph does not define it.';
+  const result = validateModelResult(JSON.stringify({ title: 'DMA', summary: 'Direct memory access, in the context of device transfers.', context: 'The paragraph describes its purpose.', background, limitations: '', sources: ['p-1', 'invented-definition'] }), contexts);
+  assert.equal(result.background, background);
+  assert.equal(result.limitations, '');
+  assert.deepEqual(result.sources, ['p-1']);
+  const record = { docId: 'doc', selected: { text: 'DMA' }, contexts, result };
+  const markdown = exportMarkdown([record], [{ id: 'doc', title: 'Device transfers' }]);
+  assert.ok(markdown.includes('知识补充（通用知识）\n\n' + background));
+  assert.ok(markdown.indexOf(background) < markdown.indexOf('原文定位：'));
+  assert.ok(!markdown.includes('invented-definition'));
+  const legacy = validateModelResult(JSON.stringify({ summary: 'An older response without supplementary knowledge.' }), []);
+  assert.equal(legacy.background, '');
+});
+
 test('offline free questions never masquerade as model answers', () => {
   const selected = { text: 'Self-attention', blockId: 's-3' };
   const contexts = retrieveContext(sampleDocument, selected);

@@ -44,16 +44,17 @@ export function localExplanation(doc, selected, action, contexts) {
   if (term && action === 'explain') {
     const sample = doc.id === sampleDocument.id && term.blockId;
     return {
-      title: term.title, summary: term.definition,
+      title: term.title, brief: term.definition, summary: term.definition, localKind: 'dictionary',
       context: sample ? term.hint : '这是内置术语库中的通用定义。未调用模型，尚未判断该词在当前文档中的具体含义。',
-      logic: [], limitations: '本地术语库 · 未调用模型。原文片段用于对照，不能自动验证通用定义。',
+      logic: [], limitations: '内置词典 · 未调用模型。原文片段用于对照，不能自动验证通用定义。',
       sources: contexts.filter(c => sample ? c.id === term.blockId || c.id === selected.blockId : c.id === selected.blockId).map(c => c.id), mode: 'local'
     };
   }
   return {
-    title: action === 'logic' ? '准备拆解这句话' : action === 'ask' ? '针对选区提问' : '已定位这段原文',
+    title: action === 'logic' ? '准备拆解这句话' : action === 'ask' ? '针对选区提问' : '词典暂未收录',
+    brief: '内置词典暂未收录这个选区。连接模型后，可根据本文语境解释。', localKind: 'context',
     summary: action === 'explain' ? '内置术语库还没有收录这个选区。接入模型后，可以结合文档上下文解释它。' : '尚未接入模型，不能生成这次问题的分析。可以先核对下方相关原文，或在设置中连接模型后继续。',
     context: '以下是选区附近及关键词匹配到的原文片段。这些摘录由本地检索获得，不是模型给出的结论。',
-    logic: [], limitations: '本地辅助 · 未调用模型。不会用预设答案替代自由问答。', sources: contexts.map(c => c.id), mode: 'local'
+    logic: [], limitations: '原文对照 · 未调用模型。', sources: contexts.map(c => c.id), mode: 'local'
   };
 }
