@@ -1,7 +1,7 @@
 import { inflateRawSync } from 'node:zlib';
 
-const macroError = () => new Error('此演示文件包含宏或脚本。请在 WPS 中另存为不含宏的 .pptx 后导入。');
-const invalidError = () => new Error('PPT 文件结构损坏或格式不支持，请在 WPS 中另存为 .pptx 后重试。');
+const macroError = () => new Error('此演示文件包含宏或脚本。请在演示软件中另存为不含宏的 .pptx 后导入。');
+const invalidError = () => new Error('PPT 文件结构损坏或格式不支持，请在演示软件中另存为 .pptx 后重试。');
 const activeName = /(?:^|\/)(?:_?vba|_VBA_PROJECT_CUR|vbaProject(?:Signature)?(?:\..*)?|jsa(?:Project)?(?:\..*)?|javascriptProject(?:\..*)?|jsProject(?:\..*)?|scriptProject(?:\..*)?|Macros?)$/i;
 
 // Inspect passive file metadata before handing a document to the installed renderer.

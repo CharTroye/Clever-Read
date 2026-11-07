@@ -38,7 +38,7 @@ export class ReadingTools {
     } else if (action === 'remove-quote') {
       this.quotes.splice(Number(button.dataset.index), 1); this.renderQuotes(); this.remember();
     } else if (action === 'clear-quotes') { this.quotes = []; this.renderQuotes(); this.remember(); }
-    else if (action === 'ask-quotes') { this.closeComparison(); this.layout().revealAssistant(); $('#question').focus(); }
+    else if (action === 'ask-quotes') { this.closeComparison(); this.layout().revealAssistant(); $('#question').focus({ preventScroll: true }); }
     else if (action === 'focus') await this.focusSelection(button.dataset.blockId);
     else if (action === 'restore') this.restoreFocus();
     else if (action === 'source') { this.closeComparison(); this.layout().hideAssistant(); }

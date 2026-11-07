@@ -5,9 +5,11 @@ import { sampleDocument, localExplanation } from '../public/sample.mjs';
 
 test('DeepSeek display names are normalized only for the official provider', () => {
   assert.equal(normalizeModelName(' DeepSeek-V4.1-Flash ', 'https://api.deepseek.com/chat/completions'), 'deepseek-flash');
+  assert.equal(normalizeModelName(' DeepSeek-V4.1-Flash-1017 ', 'https://api.deepseek.com/chat/completions'), 'deepseek-flash');
   assert.equal(normalizeModelName('DeepSeek-V4-Pro', 'https://api.deepseek.com/v1/chat/completions'), 'deepseek-v4-pro');
   assert.equal(normalizeModelName('custom-model', 'https://api.deepseek.com/chat/completions'), 'custom-model');
   assert.equal(normalizeModelName('DeepSeek-V4.1-Flash', 'https://other.example/chat/completions'), 'DeepSeek-V4.1-Flash');
+  assert.equal(normalizeModelName('deepseek-v4.1-flash-1017', 'https://other.example/chat/completions'), 'deepseek-v4.1-flash-1017');
 });
 
 test('long unpunctuated text is preserved in bounded blocks', () => {

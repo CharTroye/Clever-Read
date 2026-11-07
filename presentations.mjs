@@ -3,12 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runPowerShell } from './vault.mjs';
 import { checkPresentationInput } from './presentation-input.mjs';
+import { macPresentationCapabilities, renderMacPresentation } from './mac-presentations.mjs';
 
 const project = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(project, 'scripts', 'render-presentation.ps1');
 let busy = false;
 
 export async function presentationCapabilities() {
+  if (process.platform === 'darwin') return macPresentationCapabilities();
   if (process.platform !== 'win32') return { available: false, preferred: null, renderers: [] };
   return JSON.parse(await runPowerShell(script, ['-ProbeOnly']));
 }
@@ -18,6 +20,7 @@ export function presentationErrorMessage(message) {
   const limit = message.match(/PRESENTATION_SLIDE_LIMIT:(\d+):(\d+)/);
   if (limit) return `这份 PPT 有 ${limit[2]} 张幻灯片，超过 ${limit[1]} 张上限，请拆分后导入。`;
   if (/PRESENTATION_TEXT_LIMIT/.test(message)) return 'PPT 文字超过 30 万字符，请拆分后导入。';
+  if (process.platform === 'darwin' && /spawn|ENOENT|qlmanage|Chrome|Chromium|Edge/i.test(message)) return '本机幻灯片转换失败。请确认已安装 Chrome、Chromium 或 Edge，且文件能在 Mac 上正常预览；也可先导出为 PDF 后导入。';
   if (/NO_PRESENTATION_ENGINE/.test(message)) return '未能启动 WPS 演示或 PowerPoint。请确认已安装 Windows 桌面版 WPS（含演示组件）；可先手动打开 WPS 演示后重试，仍失败时修复 WPS 安装。';
   if (/PRESENTATION_RENDER_FAILED|spawn|ENOENT/.test(message)) return '本机 WPS / PowerPoint 读取或渲染失败。请先确认文件可在 WPS 中正常打开，再重试导入。';
   return message;
@@ -25,8 +28,8 @@ export function presentationErrorMessage(message) {
 
 export async function importPresentation(bytes, extension, directory = path.join(project, '.runtime', 'presentation-imports'), { renderer = 'auto', onProgress, signal } = {}) {
   if (!['ppt', 'pptx'].includes(extension)) throw new Error('请导入 .ppt 或 .pptx 文件。');
-  if (process.platform !== 'win32') throw new Error('保留 PPT 排版需要 Windows 桌面版 WPS 演示或 Microsoft PowerPoint。');
-  if (!['auto', 'wps', 'powerpoint'].includes(renderer)) throw new Error('不支持的幻灯片读取方式。');
+  if (!['win32', 'darwin'].includes(process.platform)) throw new Error('PPT 导入支持 macOS 本机预览或 Windows 桌面版 WPS / PowerPoint；其他系统请先将文件导出为 PDF。');
+  if (!(process.platform === 'darwin' ? ['auto', 'macos'] : ['auto', 'wps', 'powerpoint']).includes(renderer)) throw new Error('不支持的幻灯片读取方式。');
   if (busy) throw new Error('另一份 PPT 正在解析，请稍候再试。');
   if (!bytes.length || bytes.length > 30 * 1024 * 1024) throw new Error('PPT 文件须小于 30 MB。');
   const pptx = bytes[0] === 0x50 && bytes[1] === 0x4b;
@@ -41,6 +44,7 @@ export async function importPresentation(bytes, extension, directory = path.join
     temporary = await mkdtemp(path.join(path.resolve(directory), 'deck-'));
     input = path.join(temporary, 'source.' + extension);
     await writeFile(input, bytes);
+    if (process.platform === 'darwin') return await renderMacPresentation(input, temporary, { renderer, onProgress, signal });
     await runPowerShell(script, ['-InputFile', input, '-OutputDirectory', temporary, '-Renderer', renderer], '', 600000, { onProgress, signal });
     const manifest = JSON.parse(await readFile(path.join(temporary, 'manifest.json'), 'utf8'));
     if (!Array.isArray(manifest.slides) || !manifest.slides.length || manifest.slides.length > 300) throw new Error('没有可阅读的幻灯片。');
@@ -59,7 +63,7 @@ export async function importPresentation(bytes, extension, directory = path.join
     }
     return { slides, blocks, pages: slides.length, slideWidth: manifest.width, slideHeight: manifest.height, renderer: manifest.renderer, rendererId: manifest.rendererId };
   } catch (error) {
-    if (input) await runPowerShell(script, ['-InputFile', input, '-CleanupOnly'], '', 10000).catch(() => {});
+    if (input && process.platform === 'win32') await runPowerShell(script, ['-InputFile', input, '-CleanupOnly'], '', 10000).catch(() => {});
     const mapped = new Error(presentationErrorMessage(error.message));
     if (error.name === 'AbortError') mapped.name = error.name;
     throw mapped;

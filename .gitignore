@@ -5,3 +5,10 @@ node_modules/
 .runtime/
 test-results/
 *.log
+.DS_Store
+tmp/
+output/
+__pycache__/
+*.pyc
+# Local reading prototype contains excerpts from a personally imported textbook.
+public/previews/reflow*

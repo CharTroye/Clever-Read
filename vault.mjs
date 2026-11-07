@@ -85,7 +85,7 @@ export class ModelVault {
       const state = JSON.parse(await this.unprotect(JSON.parse(raw)));
       if (state.version !== 1 || !Array.isArray(state.profiles)) throw new Error();
       return this.state = state;
-    } catch { throw new Error('无法打开密钥库，请使用保存密钥时的 Windows 账户；原库不会被覆盖。'); }
+    } catch { throw new Error('无法解密本机密钥库。Windows 账户加密的旧库不能直接在 Mac 上使用；请保留原库并重新配置模型。原库不会被覆盖。'); }
   }
   async change(update) {
     const operation = this.queue.then(async () => {

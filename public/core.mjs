@@ -20,8 +20,8 @@ export function normalizeModelName(model, endpoint) {
   try { host = new URL(endpoint).hostname; } catch { return value; }
   if (host !== 'api.deepseek.com') return value;
   const id = value.toLowerCase();
-  // DeepSeek-V4.1-Flash is the display name; the API ID is deepseek-flash.
-  if (id === 'deepseek-v4.1-flash' || id === 'deepseek-flash') return 'deepseek-flash';
+  // Official version names use the stable deepseek-flash API ID.
+  if (['deepseek-v4.1-flash', 'deepseek-v4.1-flash-1017', 'deepseek-flash'].includes(id)) return 'deepseek-flash';
   if (id === 'deepseek-v4-pro') return 'deepseek-v4-pro';
   return value;
 }
