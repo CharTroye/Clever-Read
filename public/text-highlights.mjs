@@ -1,3 +1,9 @@
+export const highlightColors = ['yellow', 'green', 'blue', 'pink', 'purple'];
+export const highlightColor = value => highlightColors.includes(value) ? value : 'yellow';
+export function recolorMarks(marks, ids, color) {
+  return marks.map(mark => ids.has(mark.id) ? { ...mark, color: highlightColor(color) } : mark);
+}
+
 // Text and context anchors survive PDF text-layer replacement and page scaling.
 export function textAnchor(text, start, end) {
   return { start, end, text: text.slice(start, end), prefix: text.slice(Math.max(0, start - 32), start), suffix: text.slice(end, end + 32) };
@@ -33,9 +39,21 @@ function overlaps(a, b) {
 }
 
 export class TextHighlights {
-  constructor({ root, button, getDocument, getRange, rangeOffsets, save, onSelect, onMessage }) {
-    Object.assign(this, { root, button, getDocument, getRange, rangeOffsets, save, onSelect, onMessage });
+  constructor({ root, button, colorButton, palette, preferenceKey, getDocument, getRange, rangeOffsets, save, onSelect, onMessage, onChange }) {
+    Object.assign(this, { root, button, colorButton, palette, preferenceKey, getDocument, getRange, rangeOffsets, save, onSelect, onMessage, onChange });
     this.states = new Map(); this.ranges = []; this.frame = 0; this.pending = false;
+    this.color = 'yellow';
+    try { this.color = highlightColor(localStorage.getItem(preferenceKey)); } catch {}
+    palette.addEventListener('pointerdown', event => event.preventDefault());
+    palette.addEventListener('click', event => {
+      const swatch = event.target.closest('[data-highlight-color]');
+      if (!swatch) return;
+      this.chooseColor(swatch.dataset.highlightColor, this.getRange()).catch(error => this.onMessage(error.message));
+    });
+    palette.addEventListener('toggle', event => { if (event.newState === 'open') this.positionPalette(); });
+    new MutationObserver(() => {
+      if (button.closest('.selection-tools').classList.contains('hidden') && palette.matches(':popover-open')) palette.hidePopover();
+    }).observe(button.closest('.selection-tools'), { attributes: true, attributeFilter: ['class'] });
     new MutationObserver(() => this.schedule()).observe(root, { childList: true, subtree: true, characterData: true });
     root.addEventListener('click', event => {
       if (window.getSelection()?.toString().trim()) return;
@@ -73,10 +91,20 @@ export class TextHighlights {
   updateButton(range) {
     const available = !!range && !range.collapsed && this.root.contains(range.commonAncestorContainer);
     this.button.hidden = !available;
-    const marked = available && this.selected(range).length > 0;
+    this.colorButton.hidden = !available;
+    const selected = available ? this.selected(range) : [], marked = selected.length > 0;
+    const color = selected[0]?.color || this.color;
     this.button.setAttribute('aria-pressed', String(marked));
     this.button.querySelector('span:last-child').textContent = marked ? '取消高亮' : '高亮';
-    this.button.title = marked ? '取消选中文字的高亮' : '黄色高亮，保存在本机';
+    this.button.title = marked ? '取消选中文字的高亮' : '高亮选中文字，保存在本机';
+    this.button.dataset.highlightColor = color;
+    this.colorButton.dataset.highlightColor = color;
+    this.palette.querySelectorAll('[data-highlight-color]').forEach(swatch => swatch.setAttribute('aria-pressed', String(swatch.dataset.highlightColor === color)));
+  }
+  positionPalette() {
+    const rect = this.colorButton.getBoundingClientRect(), width = this.palette.offsetWidth, height = this.palette.offsetHeight;
+    this.palette.style.left = Math.max(8, Math.min(innerWidth - width - 8, rect.left + rect.width / 2 - width / 2)) + 'px';
+    this.palette.style.top = (rect.bottom + height + 8 <= innerHeight ? rect.bottom + 6 : Math.max(8, rect.top - height - 6)) + 'px';
   }
   paint() {
     this.ranges = [];
@@ -89,25 +117,34 @@ export class TextHighlights {
         const offset = locateTextAnchor(source.element.textContent, anchor);
         if (!offset) continue;
         const range = this.rangeOffsets(source.element, offset.start, offset.end);
-        if (range) { this.ranges.push({ id: mark.id, range, source }); source.element.classList.add('has-text-highlights'); }
+        if (range) { this.ranges.push({ id: mark.id, color: highlightColor(mark.color), range, source }); source.element.classList.add('has-text-highlights'); }
       }
     }
-    const highlight = new Highlight(...this.ranges.map(item => item.range)); highlight.priority = 2;
-    CSS.highlights.set('reader-mark', highlight);
+    CSS.highlights.delete('reader-mark');
+    for (const color of highlightColors) {
+      const highlight = new Highlight(...this.ranges.filter(item => item.color === color).map(item => item.range)); highlight.priority = 2;
+      CSS.highlights.set('reader-mark-' + color, highlight);
+    }
     this.updateButton(this.getRange());
   }
-  async toggle(range) {
+  async toggle(range, color = this.color, recolor = false) {
     if (this.pending) return;
     if (!globalThis.Highlight || !globalThis.CSS?.highlights) throw new Error('当前浏览器不支持文字高亮，请使用新版 Chrome、Edge 或 Safari。');
     const docId = this.getDocument()?.id, anchors = this.capture(range);
     if (!docId || !anchors.length) throw new Error('请先选中正文中的文字。扫描图片需有 OCR 文字层才能画重点。');
     const previous = this.states.get(docId)?.marks || [], ids = new Set(this.selected(range).map(item => item.id));
-    const marks = ids.size ? previous.filter(mark => !ids.has(mark.id)) : [...previous, { id: crypto.randomUUID(), createdAt: Date.now(), anchors }];
+    const marks = ids.size ? recolor ? recolorMarks(previous, ids, color) : previous.filter(mark => !ids.has(mark.id)) : [...previous, { id: crypto.randomUUID(), color: highlightColor(color), createdAt: Date.now(), anchors }];
     const state = { id: docId, marks };
-    this.pending = true; this.button.disabled = true;
+    this.pending = true; this.button.disabled = this.colorButton.disabled = true;
     try {
       await this.save(state); this.states.set(docId, state);
-      this.paint(); this.onMessage(ids.size ? '已取消高亮。' : '已高亮 · 保存在本机');
-    } finally { this.pending = false; this.button.disabled = false; }
+      if (recolor) { this.color = highlightColor(color); try { localStorage.setItem(this.preferenceKey, this.color); } catch {} }
+      this.paint(); this.onMessage(ids.size && !recolor ? '已取消高亮。' : recolor && ids.size ? '已更换高亮颜色。' : '已高亮 · 保存在本机');
+    } finally { this.pending = false; this.button.disabled = this.colorButton.disabled = false; }
+  }
+  async chooseColor(color, range) {
+    if (this.pending) return;
+    await this.toggle(range, highlightColor(color), true);
+    this.palette.hidePopover(); this.onChange();
   }
 }

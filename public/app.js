@@ -1915,7 +1915,9 @@ async function init() {
   applyTheme();
   hydrateIcons();
   textHighlights = new TextHighlights({ root: $('#document-content'), button: $('#selection-highlight'), getDocument: () => active,
+    colorButton: $('#highlight-color-toggle'), palette: $('#highlight-colors'), preferenceKey: storagePrefix + '-highlight-color',
     getRange: () => selectionRange, rangeOffsets: rangeForOffsets, save: state => storage('highlights', 'put', state), onMessage: toast,
+    onChange: () => { window.getSelection()?.removeAllRanges(); globalThis.CSS?.highlights?.delete('read-selection'); showSelectionTools(selectionRange); },
     onSelect: (range, source) => {
       const block = source.blockId ? active.blocks.find(block => block.id === source.blockId) : active.blocks.find(block => block.page === source.page && !block.unreadable);
       if (block && setSelection({ text: range.toString(), blockId: block.id, page: source.page }, range)) showSelectionTools(range);
