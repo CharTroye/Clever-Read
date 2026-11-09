@@ -1,6 +1,6 @@
 {
   "name": "clever-read",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "private": true,
   "type": "module",
   "description": "A local-first reading workspace for contextual explanations and document questions.",
@@ -8,6 +8,6 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check vault.mjs && node --check presentations.mjs && node --check presentation-input.mjs && node --check public/app.js && node --check public/theme.js && node --check public/core.mjs && node --check public/documents.mjs && node --check public/regions.mjs && node --check public/slides.mjs && node --check public/layout.mjs && node --check public/library.mjs && node --check public/reading-ui.mjs && node --check public/reading-thread.mjs && node --check public/presentation-stream.mjs && node --check public/appearance.mjs && node --check public/motion.mjs && node --check public/motion-core.mjs && node --check public/answer-stream.mjs && node --check public/connected-reading.mjs && node --check public/reading-tools.mjs && node --check public/explanation-cache.mjs && node --check mac-presentations.mjs && node --check scripts/launch.mjs && node --check public/presentation-pdf.mjs && node --check public/outline.mjs && node --check public/outline-ui.mjs && node --check public/pdf-layout.mjs && node --check public/previews/reader-0130.mjs && node --check public/reading-motion.mjs"
+    "check": "node --check server.mjs && node --check vault.mjs && node --check presentations.mjs && node --check presentation-input.mjs && node --check public/app.js && node --check public/theme.js && node --check public/core.mjs && node --check public/documents.mjs && node --check public/regions.mjs && node --check public/slides.mjs && node --check public/layout.mjs && node --check public/library.mjs && node --check public/reading-ui.mjs && node --check public/reading-thread.mjs && node --check public/presentation-stream.mjs && node --check public/appearance.mjs && node --check public/motion.mjs && node --check public/motion-core.mjs && node --check public/answer-stream.mjs && node --check public/connected-reading.mjs && node --check public/reading-tools.mjs && node --check public/explanation-cache.mjs && node --check mac-presentations.mjs && node --check scripts/launch.mjs && node --check public/presentation-pdf.mjs && node --check public/outline.mjs && node --check public/outline-ui.mjs && node --check public/pdf-layout.mjs && node --check public/previews/reader-0130.mjs && node --check public/reading-motion.mjs && node --check public/text-highlights.mjs"
   }
 }

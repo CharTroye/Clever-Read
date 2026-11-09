@@ -80,7 +80,7 @@
     <footer class="app-footer"><span><span data-icon="shield"></span>文档保存在本机</span><button class="mode-pill" data-action="models" id="model-status"><span data-icon="message"></span>内置词典</button></footer>
   </div>
 
-  <div id="selection-tools" class="selection-tools hidden" role="toolbar" aria-label="选区操作"><button data-action="explain"><span data-icon="open-book"></span>解释</button><button data-action="ask-focus"><span data-icon="message"></span>提问</button><button data-reading-action="quote" title="收集多段原文后一起提问"><span data-icon="copy"></span>引用</button><button data-reading-action="focus"><span data-icon="focus"></span>聚焦</button><button class="icon-button" data-action="dismiss-selection" aria-label="取消选区" title="取消选区（Esc）"><span data-icon="close"></span></button></div>
+  <div id="selection-tools" class="selection-tools hidden" role="toolbar" aria-label="选区操作"><button data-action="explain"><span data-icon="open-book"></span>解释</button><button data-action="ask-focus"><span data-icon="message"></span>提问</button><button id="selection-highlight" data-action="highlight" aria-pressed="false" title="黄色高亮，保存在本机"><span data-icon="highlight"></span><span>高亮</span></button><button data-reading-action="quote" title="收集多段原文后一起提问"><span data-icon="copy"></span>引用</button><button data-reading-action="focus"><span data-icon="focus"></span>聚焦</button><button class="icon-button" data-action="dismiss-selection" aria-label="取消选区" title="取消选区（Esc）"><span data-icon="close"></span></button></div>
   <div id="toast" class="toast hidden" role="status"></div>
 
   <dialog id="import-dialog" class="modal" aria-labelledby="import-title">

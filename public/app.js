@@ -19,6 +19,7 @@ import { validateImportFile } from './outline.mjs';
 import { OutlineSidebar } from './outline-ui.mjs';
 import { pageLayout, spreadStart, spreadPages, adjacentPdfPage, spreadReadingPage, facingPageGeometry, fitPageInside } from './pdf-layout.mjs';
 import { captureReadingMotion, finishReadingMotion } from './reading-motion.mjs';
+import { TextHighlights } from './text-highlights.mjs';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => Array.from(document.querySelectorAll(selector));
@@ -28,6 +29,7 @@ const paths = {
   'open-book': '<path d="M3 4c4-1 7 0 9 2 2-2 5-3 9-2v15c-4-1-7 0-9 2-2-2-5-3-9-2z"/><path d="M12 6v15"/>',
   note: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   bookmark: '<path d="M6 3h12v19l-6-4-6 4z"/>',
+  highlight: '<path d="m14 3 7 7-8 8-7-7zM6 11l-3 6 4 4 6-3M3 21h6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', minus: '<path d="M5 12h14"/>',
   upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/>',
   download: '<path d="M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5"/>',
@@ -132,6 +134,7 @@ let records = [];
 let active;
 let selection = null;
 let selectionRange = null;
+let textHighlights = null;
 let currentRecord = null;
 let view = 'library';
 let panel = 'explain';
@@ -260,9 +263,9 @@ function storage(store, method, value) {
 
 async function openStorage() {
   db = await new Promise((resolve, reject) => {
-    const request = indexedDB.open(qaSession ? 'clever-read-qa-' + qaSession : 'clever-read', 5);
+    const request = indexedDB.open(qaSession ? 'clever-read-qa-' + qaSession : 'clever-read', 6);
     request.onupgradeneeded = () => {
-      for (const name of ['documents', 'records', 'readingStates', 'translations', 'explanations', 'outlines']) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, { keyPath: 'id' });
+      for (const name of ['documents', 'records', 'readingStates', 'translations', 'explanations', 'outlines', 'highlights']) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name, { keyPath: 'id' });
     };
     let blocked = false;
     request.onblocked = () => { blocked = true; reject(new Error('请关闭或刷新其他 Clever Read 页面，完成本地文档库升级。已有文档和阅读记录会保留。')); };
@@ -271,6 +274,7 @@ async function openStorage() {
   });
   const savedStates = await storage('readingStates', 'getAll');
   const savedOutlines = await storage('outlines', 'getAll');
+  textHighlights.load(await storage('highlights', 'getAll'));
   [documents, records] = await Promise.all([storage('documents', 'getAll'), storage('records', 'getAll')]);
   for (const doc of documents) {
     doc.outlineState = savedOutlines.find(state => state.id === doc.id) || doc.outlineState;
@@ -974,6 +978,7 @@ function blockForNode(node) {
 
 function showSelectionTools(range) {
   if (!range) return;
+  textHighlights?.updateButton(selectionRange);
   const rects = Array.from(range.getClientRects());
   const rect = rects.at(-1) || range.getBoundingClientRect();
   const toolbar = $('#selection-tools');
@@ -1784,6 +1789,7 @@ document.addEventListener('click', async event => {
         outlineSidebar?.remove(doc);
         await storage('documents', 'delete', doc.id); documents = documents.filter(d => d.id !== doc.id);
         await storage('outlines', 'delete', doc.id);
+        await storage('highlights', 'delete', doc.id); textHighlights.remove(doc.id);
         await storage('readingStates', 'delete', doc.id); readerSessions.delete(doc.id);
         if (active?.id === doc.id) { stopRequest(); clearSelection(); await teardownPdf(); slideReader.destroy(); readerDocumentId = null; currentRecord = null; active = documents[0]; navigateView('library'); }
         renderLibrary();
@@ -1836,6 +1842,12 @@ document.addEventListener('click', async event => {
     else if (action === 'text-only' && selection?.hasText) { setSelection({ ...selection, includeImage: false }); renderAssistant(); toast('接下来的提问只发送选区文字。'); }
     else if (action === 'slide-previous' || action === 'slide-next') slideReader.jump(slideReader.current + (action === 'slide-next' ? 1 : -1), scrollBehavior());
     else if (action === 'explain' || action === 'logic') await ask(action);
+    else if (action === 'highlight') {
+      await textHighlights.toggle(selectionRange);
+      window.getSelection()?.removeAllRanges();
+      globalThis.CSS?.highlights?.delete('read-selection');
+      showSelectionTools(selectionRange);
+    }
     else if (action === 'ask-focus') { if (termPeek) await promoteTermPeek(true); else { workspaceLayout?.revealAssistant(); $('#question').focus({ preventScroll: true }); } $('#selection-tools').classList.add('hidden'); }
     else if (action === 'dismiss-selection') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
     else if (action === 'clear-answer') { stopRequest(); clearSelection(); currentRecord = null; window.getSelection()?.removeAllRanges(); renderAssistant(); rememberReader(); }
@@ -1902,6 +1914,13 @@ async function init() {
   }).catch(() => {});
   applyTheme();
   hydrateIcons();
+  textHighlights = new TextHighlights({ root: $('#document-content'), button: $('#selection-highlight'), getDocument: () => active,
+    getRange: () => selectionRange, rangeOffsets: rangeForOffsets, save: state => storage('highlights', 'put', state), onMessage: toast,
+    onSelect: (range, source) => {
+      const block = source.blockId ? active.blocks.find(block => block.id === source.blockId) : active.blocks.find(block => block.page === source.page && !block.unreadable);
+      if (block && setSelection({ text: range.toString(), blockId: block.id, page: source.page }, range)) showSelectionTools(range);
+    }
+  });
   workspaceLayout = initWorkspaceLayout(storagePrefix, { beforeChange: () => { if (view !== 'reader') return null; readingTools?.restoreFocus(); if (readingTools?.comparing) readingTools.closeComparison(); closeTermPeek(); $('#selection-tools').classList.add('hidden'); pendingReadingMovement = captureReadingMotion($$('.pdf-page[data-rendered]')); rememberReader(); return readingPositionSnapshot(); }, duringChange: resizePdfDuringPane, afterChange: async (position, { live = false } = {}) => {
     if (active?.readingState) { active.readingState.focused = workspaceLayout.getState().focused; storage('readingStates', 'put', active.readingState).catch(() => {}); }
     const documentId = active?.id;

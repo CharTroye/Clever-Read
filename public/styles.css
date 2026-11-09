@@ -131,6 +131,8 @@ input:focus, textarea:focus, select:focus { outline: 3px solid #007aff33; outlin
 .source-flash { background: #e9f2ff !important; outline: 6px solid #e9f2ff; }
 .document-paragraph::selection, .document-paragraph *::selection { background: #d8eaff; color: #263751; }
 ::highlight(read-selection) { background: #d8eaff; color: #253e65; }
+::highlight(reader-mark) { background-color:#ffdc6ba6; }
+.pdf-page .textLayer.has-text-highlights { mix-blend-mode:multiply; }
 ::highlight(source-selection) { background: #e3edff; color: #263751; }
 .reader-footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 32px; padding: 0 26px; color: #606675; font-size: 10px; background: #f6f7f9; }
 .reader-footer > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -205,6 +207,8 @@ input:focus, textarea:focus, select:focus { outline: 3px solid #007aff33; outlin
 .selection-tools { display: flex; align-items: center; gap: 2px; position: fixed; z-index: 30; max-width: calc(100vw - 16px); padding: 5px; border: 1px solid #ffffffcc; border-radius: 11px; background: #ffffffed; backdrop-filter: blur(16px); box-shadow: 0 8px 25px #1e2e5126, 0 0 0 1px #1e2e510a; }
 .selection-tools > button { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 8px; border-radius: 7px; color: #4166a3; font-size: 12px; white-space: nowrap; }
 .selection-tools svg { width: 14px; height: 14px; }
+#selection-highlight[hidden] { display:none; }
+#selection-highlight[aria-pressed="true"] { background:#ffdc6b66; color:#715214; }
 .selection-tools .icon-button { border-left: 1px solid #e2e9f5; border-radius: 0; margin-left: 3px; padding: 7px; }
 .toast { position: fixed; z-index: 100; bottom: 28px; left: 50%; width: max-content; max-width: calc(100vw - 32px); padding: 13px 18px; border: 1px solid #ffffffbb; border-radius: 13px; color: #344665; background: #ffffffeb; backdrop-filter: blur(20px); box-shadow: 0 8px 30px #23345424; font-size: 13px; line-height: 1.6; pointer-events: none; opacity: 1; visibility: visible; transform: translateX(-50%); transition: opacity 160ms ease, transform 200ms var(--ease-out), visibility 160ms; }
 .toast.hidden { display: block !important; opacity: 0; visibility: hidden; transform: translate(-50%, 8px) scale(.98); }

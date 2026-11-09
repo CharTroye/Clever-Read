@@ -44,6 +44,17 @@ function publicProfile(profile) {
   return { id: profile.id, name: profile.name, model: profile.model, endpoint: profile.endpoint, vision: profile.vision, hasKey: !!profile.apiKey, updatedAt: profile.updatedAt };
 }
 
+export function vaultOpenMessage(platform, protection, code) {
+  const preserve = '原库不会被覆盖。可先取消勾选“保存到本机模型库”，重新填写 API Key 临时使用。';
+  if (protection === 'windows-dpapi') {
+    if (platform !== 'win32') return '这是 Windows 账户加密的密钥库，需要在原 Windows 电脑和账户中打开。' + preserve;
+    if (code === 'ENOENT') return '无法启动 Windows PowerShell，请确认系统自带的 PowerShell 可用。' + preserve;
+    return '当前 Windows 账户无法解密这个旧密钥库；复制到另一台电脑、换账户或文件损坏都可能导致此问题。' + preserve;
+  }
+  if (protection === 'local-aes-gcm') return '密钥库与 vault.key 不匹配、配套文件缺失或已损坏。跨电脑复制时需要保留同一份 .runtime/model-vault.json 和 .runtime/vault.key。' + preserve;
+  return '本机密钥库格式不正确或文件已损坏。' + preserve;
+}
+
 export class ModelVault {
   constructor(directory, options = {}) {
     this.directory = directory;
@@ -70,8 +81,11 @@ export class ModelVault {
   }
   async unprotect(envelope) {
     if (envelope.protection === 'windows-dpapi' && this.platform === 'win32') return runPowerShell(path.join(scripts, 'protect-vault.ps1'), ['-Mode', 'unprotect'], envelope.data);
-    if (envelope.protection !== 'local-aes-gcm' || this.platform === 'win32') throw new Error('此密钥库属于另一台电脑或 Windows 账户。');
-    const decipher = createDecipheriv('aes-256-gcm', await this.aesKey(), Buffer.from(envelope.nonce, 'base64'));
+    if (envelope.protection !== 'local-aes-gcm') throw new Error('此密钥库属于另一台电脑或 Windows 账户。');
+    // A copied Mac/Linux vault is readable on Windows when its matching key is present.
+    // Reading must never generate a replacement key for an existing encrypted vault.
+    const key = await readFile(path.join(this.directory, 'vault.key'));
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.nonce, 'base64'));
     decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
     return Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8');
   }
@@ -81,11 +95,14 @@ export class ModelVault {
     let raw;
     try { raw = await readFile(this.filename, 'utf8'); }
     catch (error) { if (error.code === 'ENOENT') return this.state = { version: 1, activeId: '', profiles: [] }; throw error; }
+    let envelope;
     try {
-      const state = JSON.parse(await this.unprotect(JSON.parse(raw)));
+      envelope = JSON.parse(raw);
+      const state = JSON.parse(await this.unprotect(envelope));
       if (state.version !== 1 || !Array.isArray(state.profiles)) throw new Error();
+      this.protection = envelope.protection;
       return this.state = state;
-    } catch { throw new Error('无法解密本机密钥库。Windows 账户加密的旧库不能直接在 Mac 上使用；请保留原库并重新配置模型。原库不会被覆盖。'); }
+    } catch (error) { throw new Error(vaultOpenMessage(this.platform, envelope?.protection, error.code)); }
   }
   async change(update) {
     const operation = this.queue.then(async () => {
@@ -95,6 +112,7 @@ export class ModelVault {
       const temporary = this.filename + '.' + randomUUID() + '.tmp';
       await writeFile(temporary, JSON.stringify({ version: 1, ...envelope }), { mode: 0o600 });
       await rename(temporary, this.filename);
+      this.protection = envelope.protection;
       this.state = state;
       return this.list();
     });
@@ -103,7 +121,7 @@ export class ModelVault {
   }
   async list() {
     const state = await this.read();
-    return { activeId: state.activeId, profiles: state.profiles.map(publicProfile), protection: this.platform === 'win32' ? 'windows-dpapi' : 'local-aes-gcm' };
+    return { activeId: state.activeId, profiles: state.profiles.map(publicProfile), protection: this.protection || (this.platform === 'win32' ? 'windows-dpapi' : 'local-aes-gcm') };
   }
   async save(input) {
     const endpoint = normalizeEndpoint(input.endpoint);
